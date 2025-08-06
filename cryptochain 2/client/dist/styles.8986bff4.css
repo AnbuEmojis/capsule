@@ -1,0 +1,41 @@
+.modal {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100vw; height: 100vh;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10;
+}
+
+.modal-content {
+  background: white;
+  padding: 2rem;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 400px;
+  text-align: center;
+}
+
+input[type="email"],
+input[type="password"] {
+  display: block;
+  width: 100%;
+  margin: 0.5rem 0;
+  padding: 0.5rem;
+}
+
+button {
+  margin: 0.5rem 0.25rem;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+}
+
+.divider {
+  margin: 1rem 0;
+  font-weight: bold;
+}
+
+
+/*# sourceMappingURL=/styles.8986bff4.css.map */
