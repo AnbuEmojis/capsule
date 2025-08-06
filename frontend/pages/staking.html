@@ -1,2 +1,40 @@
-<!-- Staking page HTML -->
-<h1>Staking Portal</h1>
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /><title>Staking Portal</title></head>
+<body>
+  <h1>Staking Portal</h1>
+  <input id="stakeAddress" placeholder="Your wallet address" style="width:300px"/>
+  <input id="stakeAmount" type="number" placeholder="Amount to stake" />
+  <button onclick="stake()">Stake</button>
+  <button onclick="loadStakes()">Refresh Stakes</button>
+
+  <ul id="stakesList"></ul>
+
+  <script>
+    async function stake() {
+      const address = document.getElementById('stakeAddress').value;
+      const amount  = parseFloat(document.getElementById('stakeAmount').value);
+      const res = await fetch('/api/stake', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ address, amount })
+      });
+      if (res.ok) loadStakes();
+      else alert('Stake failed');
+    }
+
+    async function loadStakes() {
+      const address = document.getElementById('stakeAddress').value;
+      const res = await fetch(`/api/stakes/${address}`);
+      const stakes = await res.json();
+      const ul = document.getElementById('stakesList');
+      ul.innerHTML = '';
+      stakes.forEach(s => {
+        const li = document.createElement('li');
+        li.textContent = `${s.amount} CAP staked at ${new Date(s.startTime).toLocaleString()}`;
+        ul.appendChild(li);
+      });
+    }
+  </script>
+</body>
+</html>

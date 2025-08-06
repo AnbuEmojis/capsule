@@ -1,2 +1,40 @@
-<!-- Storefront HTML -->
-<h1>Buy With CAP</h1>
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /><title>Buy With CAP</title></head>
+<body>
+  <h1>Store</h1>
+  <div id="items"></div>
+
+  <script>
+    async function loadItems() {
+      const res = await fetch('/api/store-items');
+      const items = await res.json();
+      const div = document.getElementById('items');
+      div.innerHTML = '';
+      items.forEach(item => {
+        const card = document.createElement('div');
+        card.innerHTML = `
+          <h3>${item.name} — ${item.price} CAP</h3>
+          <img src="${item.image}" width="150"/><p>${item.description}</p>
+          <button onclick="buy('${item._id}')">Buy</button>
+        `;
+        div.appendChild(card);
+      });
+    }
+
+    async function buy(itemId) {
+      const buyerAddress = prompt('Enter your wallet address');
+      const res = await fetch('/api/store-purchase', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ itemId, buyerAddress })
+      });
+      const json = await res.json();
+      if (json.success) alert(json.message);
+      else alert('Purchase failed: ' + json.error);
+    }
+
+    loadItems();
+  </script>
+</body>
+</html>

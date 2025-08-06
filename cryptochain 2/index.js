@@ -77,6 +77,32 @@ const Stake = require('./models/Stake');
 const Proposal = require('./models/Proposal');
 const StoreItem = require('./models/StoreItem');
 
+// serve governance page
+app.get('/governance', (req, res) =>
+    res.sendFile(path.join(__dirname, '../public/governance.html'))
+  );
+  
+  // serve NFT gallery
+  app.get('/nfts', (req, res) =>
+    res.sendFile(path.join(__dirname, '../public/nfts.html'))
+  );
+  
+  // serve staking portal
+  app.get('/staking', (req, res) =>
+    res.sendFile(path.join(__dirname, '../public/staking.html'))
+  );
+  
+  // serve CAP storefront
+  app.get('/store', (req, res) =>
+    res.sendFile(path.join(__dirname, '../public/store.html'))
+  );
+  
+  // then your existing fallback:
+  app.get('*', (req, res) =>
+    res.sendFile(path.join(__dirname, './public/capsule.html'))
+  );
+  
+
 // --- NFT Routes ---
 app.post('/api/mint-nft', async (req, res) => {
   const { owner, name, image, metadata } = req.body;
