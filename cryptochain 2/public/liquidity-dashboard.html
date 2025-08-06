@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>CryptoChain Onboarding</title>
+  <link rel="stylesheet" href="styles.css"/>
+  <script defer src="dashboard.js"></script>
+</head>
+<body>
+  <div class="modal" id="onboardingModal">
+    <div class="modal-content">
+      <h2>Welcome to CryptoChain</h2>
+      <div id="auth-section">
+        <input type="email" id="email" placeholder="Email" />
+        <input type="password" id="password" placeholder="Password" />
+        <button onclick="signup()">Sign Up</button>
+        <button onclick="login()">Login</button>
+      </div>
+      <div class="divider">or</div>
+      <button onclick="generatePaperWallet()">Use Paper Wallet</button>
+      <div id="wallet-details" style="display:none">
+        <p><strong>Wallet Address:</strong> <span id="generatedAddress"></span></p>
+        <p><strong>Private Key:</strong> <span id="generatedPrivateKey"></span></p>
+        <a id="downloadQR" download="wallet-qr.png">Download QR</a>
+        <button onclick="proceed()">Continue</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

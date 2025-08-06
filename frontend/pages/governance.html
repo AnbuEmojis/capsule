@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Governance Proposals</title>
+</head>
+<body>
+  <h1>Governance Proposals</h1>
+  <ul id="proposals"></ul>
+
+  <script>
+    async function loadProposals() {
+      const res = await fetch('/api/proposals');
+      const proposals = await res.json();
+      const ul = document.getElementById('proposals');
+      ul.innerHTML = '';
+
+      proposals.forEach(p => {
+        const li = document.createElement('li');
+        li.innerHTML = `
+          <strong>${p.title}</strong> — ${p.description}<br>
+          Yes: ${p.votes.yes} |
+          No: ${p.votes.no} |
+          Abstain: ${p.votes.abstain}
+          <button onclick="vote('${p._id}','yes')">👍</button>
+          <button onclick="vote('${p._id}','no')">👎</button>
+          <button onclick="vote('${p._id}','abstain')">🤷</button>
+        `;
+        ul.appendChild(li);
+      });
+    }
+
+    async function vote(id, choice) {
+      const res = await fetch(`/api/proposals/${id}/vote`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ vote: choice })
+      });
+      if (res.ok) loadProposals();
+      else alert('Failed to vote');
+    }
+
+    loadProposals();
+  </script>
+</body>
+</html>

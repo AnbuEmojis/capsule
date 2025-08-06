@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /><title>Your NFTs</title></head>
+<body>
+  <h1>Your NFTs</h1>
+  <!-- let the user paste their address: -->
+  <input id="owner" placeholder="Your wallet address" style="width:300px"/>
+  <button onclick="loadNFTs()">Load NFTs</button>
+  <div id="gallery"></div>
+
+  <script>
+    async function loadNFTs() {
+      const owner = document.getElementById('owner').value;
+      const res = await fetch(`/api/nfts/${owner}`);
+      const nfts = await res.json();
+      const div = document.getElementById('gallery');
+      div.innerHTML = '';
+
+      nfts.forEach(n => {
+        const card = document.createElement('div');
+        card.innerHTML = `
+          <h3>${n.name}</h3>
+          <img src="${n.image}" width="200"/>
+          <pre>${JSON.stringify(n.metadata, null,2)}</pre>
+        `;
+        div.appendChild(card);
+      });
+    }
+  </script>
+</body>
+</html>
