@@ -1,12 +1,16 @@
 // models/NFT.js
 const mongoose = require('mongoose');
 
-const nftSchema = new mongoose.Schema({
-  owner: String,
-  name: String,
-  image: String,
-  metadata: Object,
-  mintedAt: Date
-});
+const NFTSchema = new mongoose.Schema({
+  tokenId: { type: String, required: true, unique: true },
+  ownerAddress: { type: String, required: true, index: true },
+  metadataURI: { type: String, required: true }, // ipfs://… or https://…
+  chain: { type: String, default: 'CAP' }, // 'CAP' for CryptoChain, 'EVM', 'SOL', etc.
+  wrappedOriginal: {
+    present: { type: Boolean, default: false },
+    chain: String,
+    tokenId: String
+  }
+}, { timestamps: true });
 
-module.exports = mongoose.model('NFT', nftSchema);
+module.exports = mongoose.model('NFT', NFTSchema);

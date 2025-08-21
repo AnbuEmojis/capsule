@@ -1,0 +1,53 @@
+{
+  "name": "centratech",
+  "version": "1.0.0",
+  "description": "Blockchain & CryptoChain monorepo",
+  "main": "cryptochain/index.js",
+  "scripts": {
+    "start": "node cryptochain/index.js",
+    "dev": "nodemon cryptochain/index.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.4",
+    "bcryptjs": "^2.4.3",
+    "big.js": "^7.0.1",
+    "bip39": "^3.1.0",
+    "body-parser": "^1.20.2",
+    "dotenv": "^17.2.1",
+    "elliptic": "^6.6.1",
+    "express": "^4.18.2",
+    "hex-to-binary": "^1.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "level": "^8.0.1",
+    "mongoose": "^8.17.0",
+    "nanoid": "^3.3.11",
+    "passport": "^0.7.0",
+    "passport-github2": "^0.1.12",
+    "passport-google-oauth20": "^2.0.0",
+    "qrcode": "^1.5.1",
+    "redis": "^5.8.0",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "jest": "^29.5.0",
+    "nodemon": "^3.1.10",
+    "npm-run-all": "^4.1.5"
+  },
+  "nodemonConfig": {
+    "watch": [
+      "cryptochain",
+      "backend"
+    ],
+    "ext": "js,json",
+    "ignore": [
+      "data/**",
+      "node_modules/**",
+      "cryptochain/public/**"
+    ]
+  },
+  "overrides": {
+    "semver": "^7.6.3"
+  }
+}
