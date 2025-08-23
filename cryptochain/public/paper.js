@@ -715,3 +715,55 @@ window.fiatWithdraw = async function(){
     if (q.get('fiat') === 'success') window.fiatRefresh();
   })();
 })();
+
+// === DEV-FIAT overrides (uses window.FIAT_BASE) ===
+(function(){
+  const BASE = (typeof window !== 'undefined' && window.FIAT_BASE) ? window.FIAT_BASE : '';
+  const $ = (id)=>document.getElementById(id);
+  const getJSON = async (res) => { try { return await res.json(); } catch { return null; } };
+
+  window.fiatInit = async function(){
+    const r = await fetch(`${BASE}/api/fiat/init`, { method:'POST', headers:{'Content-Type':'application/json'} });
+    const j = await getJSON(r);
+    if (!r.ok) { alert('Fiat setup failed: ' + (j?.error || r.status)); return; }
+    if (j?.userId) { window.USER_ID = j.userId; localStorage.setItem('USER_ID', j.userId); }
+    await window.fiatRefresh();
+    alert('✅ Fiat wallet ready');
+  };
+
+  window.fiatRefresh = async function(){
+    const r = await fetch(`${BASE}/api/fiat/balance`);
+    if (!r.ok) return;
+    const j = await getJSON(r) || {};
+    const cur = (j.currency ? String(j.currency).toUpperCase() : 'USD');
+    const cents = Number.isFinite(j.balanceCents) ? j.balanceCents : 0;
+    const el = $('fiatBalance'); if (el) el.textContent = `${(cents/100).toFixed(2)} ${cur}`;
+  };
+
+  window.fiatDeposit = async function(){
+    const amount = prompt('Deposit amount (USD):','10.00'); if (!amount) return;
+    const r = await fetch(`${BASE}/api/fiat/deposit-checkout`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ amountCents: Math.round(parseFloat(amount)*100), currency:'usd' })
+    });
+    const j = await getJSON(r);
+    if (!r.ok || !j?.url) { alert('Could not start Stripe Checkout'); return; }
+    location.assign(j.url);
+  };
+
+  window.fiatWithdraw = async function(){
+    const amount = prompt('Withdraw amount (USD):','5.00'); if (!amount) return;
+    const r = await fetch(`${BASE}/api/fiat/withdraw`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ amountCents: Math.round(parseFloat(amount)*100) })
+    });
+    if (!r.ok) { alert('Withdraw failed'); return; }
+    window.fiatRefresh();
+  };
+
+  // Refresh after checkout success
+  (function(){
+    const q = new URLSearchParams(location.search);
+    if (q.get('fiat') === 'success') window.fiatRefresh();
+  })();
+})();
