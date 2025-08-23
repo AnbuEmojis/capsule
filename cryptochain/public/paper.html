@@ -15,6 +15,16 @@
   <!-- QR Code (one copy only) -->
   <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 </head>
+<style>
+  :root{
+    --brand:#00e0ff; --brand2:#6c5ce7; --bg:#0b1220; --ink:#e6f1ff; --muted:#9fb2c8; --ring:rgba(0,224,255,.35);
+  }
+  button{ background:linear-gradient(180deg,rgba(0,224,255,.18),rgba(0,224,255,.10)); border:1px solid var(--ring); color:var(--ink); border-radius:12px; padding:10px 14px; }
+  button:hover{ box-shadow:0 0 0 4px var(--ring); }
+  .mono{ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  .tab-panel[hidden]{ display:none!important; }
+  </style>
+  
 <body class="container py-3">
 
   <header class="mb-3 d-flex align-items-center gap-2">
@@ -98,15 +108,20 @@
     <div class="tab-pane fade" id="settings" role="tabpanel" aria-labelledby="settings-tab">
       <!-- Display & Region (optional; keep minimal here) -->
       <div class="row">
-        <button id="genPassBtn">Generate passphrase</button>
-        <button id="revealPassBtn">Reveal</button>
+        <button onclick="capGenPass()">Generate passphrase</button>
+        <button onclick="capRevealPass()">Reveal</button>
         <span id="passOut" class="mono"></span>
+        <button style="margin-left:auto" onclick="capBackupToDrive({ address: window.currentCapAddress, privateKey: window.currentPrivateKey })">Back up to Google Drive</button>
       </div>
       <div class="card mb-3">
         <div class="card-body">
           <div class="card-title h6">Display & Region</div>
           <div class="row g-2 align-items-center">
             <div class="col-sm-4 col-6">Currency:</div>
+            <select data-cap-currency>
+              <option>USD</option><option>EUR</option><option>GBP</option>
+            </select>
+            <button onclick="saveCurrency()">Save currency</button>            
             <div class="col-sm-4 col-6">
               <select id="currency-select" class="form-select">
                 <option value="USD">USD</option>
@@ -125,9 +140,9 @@
       </div>
 
       <div class="row">
-        <button id="fiatSetupBtn">Setup fiat wallet</button>
-        <button id="fiatDepositBtn">Add funds (Stripe)</button>
-        <button id="fiatWithdrawBtn">Withdraw (simulate)</button>
+        <button id="fiatSetupBtn" onclick="fiatInit()">Setup fiat wallet</button>
+        <button id="fiatDepositBtn" onclick="fiatDeposit()">Add funds (Stripe)</button>
+        <button id="fiatWithdrawBtn" onclick="fiatWithdraw()">Withdraw (simulate)</button>
         <span id="fiatBalance" class="mono">—</span>
       </div>
 
@@ -464,7 +479,19 @@
 </section>
 
 
+<section id="tab-rewards" class="tab-panel" hidden>
+  <div class="card">
+    <h3>Rewards</h3>
+    <div class="row">
+      <div>Points: <span id="rwPoints" class="mono">0</span></div>
+      <div>Streak: <span id="rwStreak" class="mono">0</span></div>
+      <button onclick="rwCheckin()">Daily check-in (+10)</button>
+      <button onclick="rwClaim()">Claim 100 pts</button>
+    </div>
+  </div>
+</section>
     </div><!-- /HUB -->
+
 
   </div><!-- /tab-content -->
 

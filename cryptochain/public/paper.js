@@ -522,3 +522,98 @@ document.getElementById('fiatWithdrawBtn')?.addEventListener('click', fiatWithdr
     })();
   })();
   
+// ====== CAP Wallet – Settings Enhancements (Fiat / Rewards / Backup) ======
+(function(){
+  const $ = (id)=>document.getElementById(id);
+
+  // -------- Passphrase (generate/reveal) --------
+  const WORDS = ["alley","arrow","basket","cabin","dawn","ember","field","globe","harbor","ivory","jungle","kilo","lemon","meadow","nectar","oasis","piano","quartz","river","saddle","timber","ultra","vapor","willow","xenon","yellow","zephyr"];
+  function genPass(n=12){ return Array.from({length:n},()=>WORDS[(Math.random()*WORDS.length)|0]).join(' '); }
+  let _pass = null;
+  window.capGenPass = function(){ _pass = genPass(); const out=$('passOut'); if(out) out.textContent='••••••••••••••'; };
+  window.capRevealPass = function(){ const out=$('passOut'); if(!_pass||!out) return; out.textContent = out.textContent.startsWith('•') ? _pass : '••••••••••••••'; };
+
+  // Placeholder: plug your real AES/scrypt here
+  async function encryptPrivKey({ privateKey, passphrase }){ return { scheme:'passphrase', ciphertext: btoa(privateKey), salt:'demo', iv:'demo', tag:'demo' }; }
+  async function promptPass(){ if(_pass) return _pass; const p = prompt('Enter passphrase to encrypt your backup:'); if(!p) throw new Error('passphrase_required'); return p; }
+
+  // -------- Google Drive backup --------
+  window.capBackupToDrive = async function({ address, privateKey }){
+    if (!window.GOOGLE_CLIENT_ID) return alert('Missing GOOGLE_CLIENT_ID');
+    const token = await new Promise((resolve,reject)=>{
+      google.accounts.oauth2.initTokenClient({
+        client_id: window.GOOGLE_CLIENT_ID,
+        scope: 'https://www.googleapis.com/auth/drive.file',
+        callback: r => r?.access_token ? resolve(r.access_token) : reject('no_token')
+      }).requestAccessToken();
+    });
+    const pass = await promptPass();
+    const enc = await encryptPrivKey({ privateKey, passphrase: pass });
+    const name = `cap-wallet-backup-${(address||'addr').slice(0,10)}.capwallet.json`;
+    const boundary = '-------314159265358979323846';
+    const meta = { name, mimeType:'application/json' };
+    const body =
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`+
+      `${JSON.stringify(meta)}\r\n`+
+      `--${boundary}\r\nContent-Type: application/json\r\n\r\n`+
+      `${JSON.stringify(enc)}\r\n`+
+      `--${boundary}--`;
+    const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+      method:'POST',
+      headers:{ Authorization:`Bearer ${token}`, 'Content-Type':`multipart/related; boundary=${boundary}` },
+      body
+    });
+    if(!res.ok) throw new Error('drive_upload_failed');
+    alert('✅ Backup saved to your Google Drive');
+  };
+
+  // -------- Fiat wallet --------
+  function userId(){ return window.USER_ID || localStorage.getItem('USER_ID') || null; }
+  window.fiatInit = async function(){
+    const r = await fetch('/api/fiat/init',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ userId: userId() }) });
+    if(!r.ok) return alert('Fiat setup failed'); alert('✅ Fiat wallet ready'); fiatRefresh();
+  };
+  window.fiatRefresh = async function(){
+    const r = await fetch('/api/fiat/balance?userId='+encodeURIComponent(userId()||'')); if(!r.ok) return;
+    const j = await r.json(); const el=$('fiatBalance'); if(el) el.textContent = `${(j.balanceCents/100).toFixed(2)} ${j.currency}`;
+  };
+  window.fiatDeposit = async function(){
+    const amount = prompt('Deposit amount (USD):','10.00'); if(!amount) return;
+    const r = await fetch('/api/fiat/deposit-checkout',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amountCents: Math.round(parseFloat(amount)*100), currency:'usd', userId: userId() }) });
+    let j=null; try{ j=await r.json(); }catch(e){}
+    if(!r.ok || !j?.url) return alert('Could not start Stripe Checkout');
+    location.assign(j.url);
+  };
+  window.fiatWithdraw = async function(){
+    const amount = prompt('Withdraw amount (USD):','5.00'); if(!amount) return;
+    const r = await fetch('/api/fiat/withdraw',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amountCents: Math.round(parseFloat(amount)*100), userId: userId() }) });
+    if(!r.ok) return alert('Withdraw failed'); fiatRefresh();
+  };
+  // success bounce
+  (()=>{
+    const q = new URLSearchParams(location.search);
+    if (q.get('fiat') === 'success') fiatRefresh();
+  })();
+
+  // -------- User prefs: currency --------
+  window.saveCurrency = async function(){
+    const sel = document.querySelector('[data-cap-currency]'); if(!sel) return alert('Currency selector not found');
+    await fetch('/api/user/prefs/currency',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ userId: userId(), currency: sel.value }) });
+    alert('✅ Currency saved');
+  };
+
+  // -------- Rewards --------
+  window.rwRefresh = async function(){
+    const r = await fetch('/api/rewards/balance?userId='+encodeURIComponent(userId()||'')); if(!r.ok) return;
+    const j = await r.json(); const p=document.getElementById('rwPoints'); const s=document.getElementById('rwStreak');
+    if(p) p.textContent=j.points; if(s) s.textContent=j.streak;
+  };
+  window.rwCheckin = async function(){
+    const r = await fetch('/api/rewards/checkin',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ userId: userId() }) });
+    if(!r.ok) return alert('Already checked in today'); rwRefresh();
+  };
+  window.rwClaim = async function(){
+    const r = await fetch('/api/rewards/claim',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ userId: userId() }) });
+    if(!r.ok) return alert('Need 100 points to claim'); alert('🎉 Claimed'); rwRefresh();
+  };
+})();

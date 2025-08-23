@@ -113,6 +113,7 @@ mongoose.connect(MONGO_URI)
   app.use('/api/wallets', require('../backend/routes/wallets'));
   app.use('/api/fiat',    require('../backend/routes/fiat'));
   app.use('/api/user',    require('../backend/routes/user'));
+  app.use('/api/rewards', require('../backend/routes/rewards'));
 
 
   // Project local

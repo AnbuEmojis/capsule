@@ -1,59 +1,36 @@
-// backend/routes/rewards.js
 const express = require('express');
 const router = express.Router();
-const { summary, claim, accrue, constants } = require('../services/rewards');
+const Reward = require('../models/Reward');
 
-// GET /api/rewards/summary
-router.get('/summary', (req, res) => {
-  try {
-    const userId = req.user?.userId || null;
-    const s = summary(userId);
-    res.json({ ...s, config: constants });
-  } catch (e) {
-    res.status(500).json({ message: 'summary failed', error: String(e?.message || e) });
-  }
+function uid(req){ return req.user?.id || req.session?.userId || req.body?.userId || req.query?.userId; }
+async function ensure(userId){ return Reward.findOneAndUpdate({ userId }, {}, { upsert:true, new:true }); }
+
+// GET balance
+router.get('/balance', async (req,res)=>{
+  const r = await ensure(uid(req));
+  res.json({ points: r.points || 0, streak: r.streak || 0, lastCheckinAt: r.lastCheckinAt });
 });
 
-// POST /api/rewards/claim  { amountCap?: number }
-router.post('/claim', async (req, res) => {
-  try {
-    const userId = req.user?.userId || null;
-    const s = summary(userId);
-    const amountCap = Number(req.body?.amountCap || s.claimableCap || 0);
-
-    const c = claim({ userId, amountCap });
-    if (!c.ok) return res.status(400).json(c);
-
-    // credit via your CAP faucet (mine to finalize)
-    const host = `${req.protocol}://${req.get('host')}`;
-    const capAddress = req.body?.capAddress || req.body?.address || req.user?.capAddress || null;
-    if (!capAddress) {
-      return res.json({ ...c, faucet: { ok: false, message: 'No CAP address provided' } });
-    }
-
-    const fac = await fetch(`${host}/api/token/faucet`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}) },
-      body: JSON.stringify({ address: capAddress, amount: c.cap })
-    }).then(r => r.json()).catch(() => ({ ok: false }));
-
-    res.json({ ...c, faucet: fac });
-  } catch (e) {
-    res.status(500).json({ message: 'claim failed', error: String(e?.message || e) });
-  }
+// Daily check-in
+router.post('/checkin', async (req,res)=>{
+  const r = await ensure(uid(req));
+  const now = new Date(); const last = r.lastCheckinAt ? new Date(r.lastCheckinAt) : null;
+  const newDay = !last || last.toDateString() !== now.toDateString();
+  if (!newDay) return res.status(400).json({ error:'already_checked_in' });
+  r.points = (r.points||0) + 10;
+  r.streak = (last && (now - last) < 48*3600e3) ? (r.streak||0) + 1 : 1;
+  r.lastCheckinAt = now;
+  r.ledger.push({ type:'checkin', delta:+10, note:'Daily' });
+  await r.save(); res.json({ ok:true, points:r.points, streak:r.streak });
 });
 
-// (Optional) admin/dev: accrue points directly (e.g., promos)
-// POST /api/rewards/accrue { points?:number, pennyNative?:number, reason?:string }
-router.post('/accrue', (req, res) => {
-  try {
-    const userId = req.user?.userId || null;
-    const { points = null, pennyNative = 0, reason = 'manual' } = req.body || {};
-    const a = accrue({ userId, reason, pennyNative, points, meta: {} });
-    res.json(a);
-  } catch (e) {
-    res.status(500).json({ message: 'accrue failed', error: String(e?.message || e) });
-  }
+// Claim
+router.post('/claim', async (req,res)=>{
+  const r = await ensure(uid(req));
+  if ((r.points||0) < 100) return res.status(400).json({ error:'not_enough_points' });
+  r.points -= 100;
+  r.ledger.push({ type:'claim', delta:-100, note:'Claim' });
+  await r.save(); res.json({ ok:true, points:r.points });
 });
 
 module.exports = router;

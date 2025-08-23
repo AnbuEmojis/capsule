@@ -10,3 +10,10 @@ node_modules
 data/chainDB/
 cryptochain/client/dist/
 *.map
+
+# hygiene
+.DS_Store
+*.bak
+*.map
+cryptochain/client/dist/
+data/chainDB/
