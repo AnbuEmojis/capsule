@@ -245,9 +245,9 @@ window.fiatInit = async function(){
 
 window.fiatRefresh = async function(){
   const r = await fetch('/api/fiat/balance');
-  if (!r.ok) return; // bail quietly if something’s wrong
+  if (!r.ok) return;                       // bail quietly on 401/500
   const j = await r.json().catch(()=>({}));
-  const cur = (j.currency || 'USD').toUpperCase();
+  const cur = (j && j.currency ? String(j.currency).toUpperCase() : 'USD');
   const cents = Number.isFinite(j.balanceCents) ? j.balanceCents : 0;
   const el = document.getElementById('fiatBalance');
   if (el) el.textContent = `${(cents/100).toFixed(2)} ${cur}`;
@@ -275,6 +275,7 @@ window.fiatWithdraw = async function(){
   if (!r.ok) { alert('Withdraw failed'); return; }
   fiatRefresh();
 };
+
 
     // -------- balances (server best-effort) --------
     async function getCapBalance(capAddr){
@@ -662,4 +663,55 @@ window.fiatWithdraw = async function(){
     const r = await fetch('/api/rewards/claim',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ userId: userId() }) });
     if(!r.ok) return alert('Need 100 points to claim'); alert('🎉 Claimed'); rwRefresh();
   };
+})();
+
+// === Fiat helpers (override for dev & resilience) ===
+(function(){
+  function id(x){ return document.getElementById(x); }
+  async function j(r){ try{ return await r.json(); }catch{ return null; } }
+
+  window.fiatInit = async function(){
+    const r = await fetch('/api/fiat/init', { method:'POST' });
+    const body = await j(r);
+    if (!r.ok) { alert('Fiat setup failed: ' + (body?.error || r.status)); return; }
+    if (body?.userId) { window.USER_ID = body.userId; localStorage.setItem('USER_ID', body.userId); }
+    await window.fiatRefresh();
+    alert('✅ Fiat wallet ready');
+  };
+
+  window.fiatRefresh = async function(){
+    const r = await fetch('/api/fiat/balance');
+    if (!r.ok) return; // bail quietly
+    const body = await j(r) || {};
+    const cur = (body.currency || 'USD').toString().toUpperCase();
+    const cents = Number.isFinite(body.balanceCents) ? body.balanceCents : 0;
+    const el = id('fiatBalance'); if (el) el.textContent = `${(cents/100).toFixed(2)} ${cur}`;
+  };
+
+  window.fiatDeposit = async function(){
+    const amt = prompt('Deposit amount (USD):','10.00'); if (!amt) return;
+    const r = await fetch('/api/fiat/deposit-checkout', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ amountCents: Math.round(parseFloat(amt)*100), currency:'usd' })
+    });
+    const body = await j(r);
+    if (!r.ok || !body?.url) { alert('Could not start Stripe Checkout'); return; }
+    location.assign(body.url);
+  };
+
+  window.fiatWithdraw = async function(){
+    const amt = prompt('Withdraw amount (USD):','5.00'); if (!amt) return;
+    const r = await fetch('/api/fiat/withdraw', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ amountCents: Math.round(parseFloat(amt)*100) })
+    });
+    if (!r.ok) { alert('Withdraw failed'); return; }
+    window.fiatRefresh();
+  };
+
+  // Refresh after Checkout success
+  (function(){
+    const q = new URLSearchParams(location.search);
+    if (q.get('fiat') === 'success') window.fiatRefresh();
+  })();
 })();

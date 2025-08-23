@@ -1,4 +1,3 @@
-// backend/routes/fiat.js
 const express = require('express');
 const router = express.Router();
 
@@ -12,24 +11,15 @@ function uid(req){
   return req.user?.id || req.session?.userId || req.body?.userId || req.query?.userId || null;
 }
 
-// DEV helper: ensure a user exists (auto-create demo user if not authenticated)
+// Ensure a user for dev/testing; in prod, require real auth
 async function ensureUser(req){
-  const id = uid(req);
   let user = null;
-
-  if (id) {
-    try { user = await User.findById(id); } catch {}
-  }
-
+  const id = uid(req);
+  if (id) { try { user = await User.findById(id); } catch {} }
   if (!user) {
     const demoEmail = process.env.DEMO_EMAIL || 'demo@local';
-    user = await User.findOne({ email: demoEmail });
-    if (!user) {
-      user = await User.create({ email: demoEmail, name: 'Demo User' });
-      /* NOTE: In real auth, remove this branch. This is to unblock local testing. */
-    }
+    user = await User.findOne({ email: demoEmail }) || await User.create({ email: demoEmail, name: 'Demo User' });
   }
-
   return user;
 }
 
@@ -39,63 +29,44 @@ async function ensureWallet(userId, currency='USD'){
   return w;
 }
 
-// Ensure Stripe customer + wallet
+// POST /api/fiat/init
 router.post('/init', async (req,res)=>{
   try{
     const user = await ensureUser(req);
-    if (!user) return res.status(401).json({ error: 'auth_required' });
-
+    if (!user) return res.status(401).json({ error:'auth_required' });
     if (!user.stripeCustomerId){
       const customer = await stripe.customers.create({ email: user.email, name: user.name || undefined });
       user.stripeCustomerId = customer.id; await user.save();
     }
     const w = await ensureWallet(user._id);
-    res.json({
-      ok:true,
-      balanceCents: w.balanceCents,
-      currency: w.currency || 'USD',
-      stripeCustomerId: user.stripeCustomerId,
-      userId: String(user._id)
-    });
-  }catch(e){
-    console.error('/api/fiat/init', e);
-    res.status(500).json({ error:'internal_error' });
+    res.json({ ok:true, userId:String(user._id), stripeCustomerId:user.stripeCustomerId, balanceCents:w.balanceCents, currency:w.currency || 'USD' });
+  } catch (e) {
+    console.error('/api/fiat/init', e); res.status(500).json({ error:'internal_error' });
   }
 });
 
-// Create Stripe Checkout session for a deposit
+// POST /api/fiat/deposit-checkout
 router.post('/deposit-checkout', async (req,res)=>{
   try{
     const user = await ensureUser(req);
     if (!user?.stripeCustomerId) return res.status(400).json({ error:'init_required' });
-
     const { amountCents, currency='usd' } = req.body || {};
     if (!amountCents || amountCents<=0) return res.status(400).json({ error:'invalid_amount' });
-
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       customer: user.stripeCustomerId,
-      line_items: [{
-        price_data: {
-          currency,
-          product_data: { name: 'Fiat wallet top-up' },
-          unit_amount: amountCents
-        },
-        quantity:1
-      }],
+      line_items: [{ price_data: { currency, product_data: { name: 'Fiat wallet top-up' }, unit_amount: amountCents }, quantity: 1 }],
       success_url: `${process.env.PUBLIC_BASE_URL}/paper.html?fiat=success&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.PUBLIC_BASE_URL}/paper.html?fiat=cancel`,
       payment_intent_data: { metadata: { userId: String(user._id), purpose:'fiat_deposit' } }
     });
-
     res.json({ url: session.url });
-  }catch(e){
-    console.error('/api/fiat/deposit-checkout', e);
-    res.status(500).json({ error:'internal_error' });
+  } catch (e) {
+    console.error('/api/fiat/deposit-checkout', e); res.status(500).json({ error:'internal_error' });
   }
 });
 
-// Webhook (dev-friendly: JSON body; later you can switch to express.raw + signature verify)
+// POST /api/fiat/webhook (dev-friendly: JSON body)
 router.post('/webhook', express.json({ type: 'application/json' }), async (req,res)=>{
   try{
     const event = req.body;
@@ -104,39 +75,29 @@ router.post('/webhook', express.json({ type: 'application/json' }), async (req,r
       if (pi.metadata?.purpose === 'fiat_deposit'){
         const w = await ensureWallet(pi.metadata.userId);
         w.balanceCents += pi.amount_received;
-        w.ledger.push({
-          type:'deposit',
-          amountCents: pi.amount_received,
-          stripePaymentIntent: pi.id,
-          note:'Stripe deposit'
-        });
+        w.ledger.push({ type:'deposit', amountCents: pi.amount_received, stripePaymentIntent: pi.id, note:'Stripe deposit' });
         await w.save();
       }
     }
     res.json({ received:true });
-  }catch(e){
-    console.error('/api/fiat/webhook', e);
-    res.status(500).json({ error:'internal_error' });
+  } catch (e) {
+    console.error('/api/fiat/webhook', e); res.status(500).json({ error:'internal_error' });
   }
 });
 
-// Read balance
+// GET /api/fiat/balance
 router.get('/balance', async (req,res)=>{
   try{
     const user = await ensureUser(req);
     if (!user) return res.status(401).json({ error:'auth_required' });
     const w = await FiatWallet.findOne({ userId: user._id });
-    res.json({
-      balanceCents: w?.balanceCents || 0,
-      currency: (w?.currency || 'USD')
-    });
-  }catch(e){
-    console.error('/api/fiat/balance', e);
-    res.status(500).json({ error:'internal_error' });
+    res.json({ balanceCents: w?.balanceCents || 0, currency: (w?.currency || 'USD') });
+  } catch (e) {
+    console.error('/api/fiat/balance', e); res.status(500).json({ error:'internal_error' });
   }
 });
 
-// Simulated withdraw (test)
+// POST /api/fiat/withdraw (simulated)
 router.post('/withdraw', async (req,res)=>{
   try{
     const user = await ensureUser(req);
@@ -147,9 +108,8 @@ router.post('/withdraw', async (req,res)=>{
     w.ledger.push({ type:'withdraw', amountCents, note:'Simulated withdraw' });
     await w.save();
     res.json({ ok:true, balanceCents:w.balanceCents });
-  }catch(e){
-    console.error('/api/fiat/withdraw', e);
-    res.status(500).json({ error:'internal_error' });
+  } catch (e) {
+    console.error('/api/fiat/withdraw', e); res.status(500).json({ error:'internal_error' });
   }
 });
 
