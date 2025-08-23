@@ -17,7 +17,7 @@ class AutomationManager extends EventEmitter {
   }
 
   async fetchWalletInfo(address) {
-    const res = await fetch(`http://localhost:3000/api/wallet-info?address=${address}`);
+    const res = await fetch(`http://localhost:3000/api/wallets/info?address=${address}`);
     return res.json();
   }
 

@@ -35,6 +35,8 @@ const passport           = require('../backend/oauth/passport');
 const oauthRoutes        = require('../backend/routes/oauth');
 const solanaRoutes       = require('../backend/routes/solana');
 const pricesRoutes = require('../backend/routes/prices');
+const { createProxyMiddleware } = require('http-proxy-middleware');
+
 
 // Routers (cryptochain local)
 const stakingRoutes      = require('./routes/staking');
@@ -44,6 +46,19 @@ const nftBridgeRoutes    = require('./routes/bridge');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+// AFTER you create `app = express()` and BEFORE any catch-all static handlers,
+// add this:
+  app.use('/api/fiat',
+    createProxyMiddleware({
+      target: 'http://localhost:3001',
+      changeOrigin: true,
+      proxyTimeout: 10000,
+      onError(err, req, res) {
+        console.error('[fiat-proxy]', err.code || err.message);
+        res.status(502).json({ error: 'fiat_proxy_error', detail: err.code || 'proxy_failed' });
+      },
+    })
+  );
 
 
 // Core middleware
@@ -154,6 +169,7 @@ mongoose.connect(MONGO_URI)
     miner.mineTransactions();
     res.json({ ok: true, height: blockchain.chain.length, time: Date.now() });
   });
+  
 
   // Optional: expose blocks for history
   app.get('/api/blocks', (req, res) => res.json(blockchain.chain));

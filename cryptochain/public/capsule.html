@@ -215,7 +215,7 @@
         async function updateWalletInfo() {
           if (!currentWallet) return;
       
-          const res = await fetch(`/api/wallet-info?address=${currentWallet}`);
+          const res = await fetch(`/api/wallets/info?address=${currentWallet}`);
           const info = await res.json();
           document.getElementById('wallet-address').innerText = "Address: " + info.address;
           document.getElementById('wallet-cap').innerText = "CAP: " + info.capTokenBalance;
