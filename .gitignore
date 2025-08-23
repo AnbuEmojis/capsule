@@ -3,3 +3,10 @@ node_modules
 *.log
 .snapshots
 
+
+# repo hygiene
+.DS_Store
+*.bak
+data/chainDB/
+cryptochain/client/dist/
+*.map

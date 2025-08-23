@@ -328,7 +328,7 @@ $('#btn-load-saved')?.addEventListener('click', async () => {
   async function updateWalletInfo() {
     if (!currentWallet) return;
     try {
-      const res = await authedFetch(`/api/wallets/info?address=${encodeURIComponent(currentWallet)}`);
+      const res = await authedFetch(`/api/wallets/api/wallets/info?address=${encodeURIComponent(currentWallet)}`);
       if (!res.ok) throw new Error('Failed to load wallet info');
       const { address, balance, capTokenBalance } = await res.json();
       if (addressSpan) addressSpan.textContent = shorten(address);

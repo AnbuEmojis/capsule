@@ -28,6 +28,7 @@
     "passport-google-oauth20": "^2.0.0",
     "qrcode": "^1.5.1",
     "redis": "^5.8.0",
+    "stripe": "^18.4.0",
     "uuid": "^11.1.0"
   },
   "devDependencies": {

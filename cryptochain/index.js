@@ -110,6 +110,9 @@ mongoose.connect(MONGO_URI)
   app.use('/api/profile',         profileRoutes); // router enforces its own auth
   app.use('/api/prices', pricesRoutes);
   app.use('/api/solana', require('../backend/routes/solana'));
+  app.use('/api/wallets', require('../backend/routes/wallets'));
+  app.use('/api/fiat',    require('../backend/routes/fiat'));
+  app.use('/api/user',    require('../backend/routes/user'));
 
 
   // Project local

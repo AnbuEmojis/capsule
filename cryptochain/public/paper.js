@@ -49,7 +49,126 @@
       document.body.appendChild(n);
       setTimeout(()=>n.remove(), ms);
     }
+
+    // ===== Google Drive backup (client-owned) =====
+async function backupToGoogleDrive({ address, encPrivKeyBlob }) {
+  // 1) Get an OAuth token for Drive (drive.file scope lets us create user-owned files we write)
+  // Requires a Google OAuth Web Client ID (put it in window.GOOGLE_CLIENT_ID from server or inline)
+  const token = await new Promise((resolve, reject) => {
+    google.accounts.oauth2
+      .initTokenClient({
+        client_id: window.GOOGLE_CLIENT_ID,             // <-- set this
+        scope: 'https://www.googleapis.com/auth/drive.file',
+        callback: (r) => r && r.access_token ? resolve(r.access_token) : reject('no token')
+      })
+      .requestAccessToken();
+  });
+
+  // 2) Build metadata + media (encrypted JSON blob)
+  const fileName = `cap-wallet-backup-${address.slice(0,10)}.capwallet.json`;
+  const meta = { name: fileName, mimeType: 'application/json' };
+  const boundary = '-------314159265358979323846';
+  const body =
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`+
+    `${JSON.stringify(meta)}\r\n`+
+    `--${boundary}\r\nContent-Type: application/json\r\n\r\n`+
+    `${JSON.stringify(encPrivKeyBlob)}\r\n`+
+    `--${boundary}--`;
+
+  // 3) Upload to Drive
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
+    body
+  });
+  if (!res.ok) throw new Error('drive_upload_failed');
+  const json = await res.json();
+  alert(`✅ Backup saved to your Google Drive as ${fileName}`);
+  return json;
+}
+
+// Wire the button
+document.getElementById('backupDriveBtn')?.addEventListener('click', async () => {
+  try {
+    // Use your existing encrypted key blob if you have it.
+    // If you only have a plaintext privateKey, prompt for a passphrase and encrypt first.
+    const address = window.currentCapAddress; // set this from your state
+    if (!address) return alert('Set your CAP address first.');
+    const pass = await promptForPassphrase(); // implement with your existing UI
+    const encPrivKeyBlob = await encryptPrivKey({ privateKey: window.currentPrivateKey, passphrase: pass });
+    await backupToGoogleDrive({ address, encPrivKeyBlob });
+  } catch (e) {
+    console.error(e); alert('Backup failed.');
+  }
+});
+
+// Lightweight wordlist (replace with full BIP39 if you like)
+const WORDS = ["alley","arrow","basket","cabin","dawn","ember","field","globe","harbor","ivory","jungle","kilo","lemon","meadow","nectar","oasis","piano","quartz","river","saddle","timber","ultra","vapor","willow","xenon","yellow","zephyr"];
+function genPassphrase(n=12){ return Array.from({length:n},()=>WORDS[(Math.random()*WORDS.length)|0]).join(' '); }
+
+let cachedPassphrase = null;
+document.getElementById('genPassBtn')?.addEventListener('click', ()=>{
+  cachedPassphrase = genPassphrase();
+  document.getElementById('passOut').textContent = '••••••••••••••••';
+});
+document.getElementById('revealPassBtn')?.addEventListener('click', ()=>{
+  if (!cachedPassphrase) return;
+  const el = document.getElementById('passOut');
+  el.textContent = (el.textContent.startsWith('•')) ? cachedPassphrase : '••••••••••••••••';
+});
+
+// Example encrypt helper using your existing scrypt/AES
+async function encryptPrivKey({ privateKey, passphrase }) {
+  // TODO: call your existing encryptor; placeholder:
+  return { scheme:'passphrase', ciphertext: btoa(privateKey), salt: 'demo', iv:'demo', tag:'demo' };
+}
+async function promptForPassphrase(){
+  if (cachedPassphrase) return cachedPassphrase;
+  const p = prompt('Enter passphrase to encrypt your backup:');
+  if (!p) throw new Error('passphrase_required'); return p;
+}
+
+document.getElementById('saveCurrencyBtn')?.addEventListener('click', async ()=>{
+  const currency = document.getElementById('currencySelect').value; // you already have the control
+  await fetch('/api/user/prefs/currency', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ currency }) });
+  alert('✅ Currency saved');
+});
+
+const STRIPE_PK = window.STRIPE_PUBLISHABLE_KEY; // inject from server if needed
+
+async function fiatInit(){
+  await fetch('/api/fiat/init', { method:'POST' }); // assumes auth cookie/JWT
+  await fiatRefresh();
+}
+async function fiatRefresh(){
+  const r = await fetch('/api/fiat/balance'); const j = await r.json();
+  document.getElementById('fiatBalance').textContent = `${(j.balanceCents/100).toFixed(2)} ${j.currency.toUpperCase()}`;
+}
+async function fiatDeposit(){
+  const amount = prompt('Deposit amount (USD):', '10.00'); if (!amount) return;
+  const amountCents = Math.round(parseFloat(amount)*100);
+  const res = await fetch('/api/fiat/deposit-checkout', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amountCents, currency:'usd' }) });
+  const { url } = await res.json(); location.href = url; // redirect to Stripe Checkout
+}
+async function fiatWithdraw(){
+  const amount = prompt('Withdraw amount (USD):', '5.00'); if (!amount) return;
+  const amountCents = Math.round(parseFloat(amount)*100);
+  const res = await fetch('/api/fiat/withdraw', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amountCents }) });
+  if (!res.ok) return alert('Withdraw failed');
+  await fiatRefresh();
+}
+
+document.getElementById('fiatSetupBtn')?.addEventListener('click', fiatInit);
+document.getElementById('fiatDepositBtn')?.addEventListener('click', fiatDeposit);
+document.getElementById('fiatWithdrawBtn')?.addEventListener('click', fiatWithdraw);
+
+// On page load, reflect Checkout result and refresh balance
+(() => {
+  const q = new URLSearchParams(location.search);
+  if (q.get('fiat') === 'success') { fiatRefresh(); }
+})();
   
+
     // -------- presence + header email --------
     async function refreshProfileCache(){
       const t = getToken(); if (!t) return null;
@@ -116,11 +235,11 @@
       if (!capAddr) return { capTokens:0, native:0 };
       const tryJSON = async url => { const r = await fetch(url,{headers:authHeaders()}); if (!r.ok) throw 0; return r.json(); };
       try {
-        const j = await tryJSON(`/info?address=${encodeURIComponent(capAddr)}`);
+        const j = await tryJSON(`/api/wallets/info?address=${encodeURIComponent(capAddr)}`);
         return { capTokens: j.capTokenBalance ?? j.cap ?? 0, native: j.balance ?? j.native ?? 0 };
       } catch {}
       try {
-        const j = await tryJSON(`/api/wallets/address?address=${encodeURIComponent(capAddr)}`);
+        const j = await tryJSON(`/api/wallets/info?address=${encodeURIComponent(capAddr)}`);
         return { capTokens: j.capTokenBalance ?? j.cap ?? 0, native: j.balance ?? j.native ?? 0 };
       } catch {}
       return { capTokens:0, native:0 };

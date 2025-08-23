@@ -10,6 +10,7 @@
 
   <!-- Your custom styles -->
   <link rel="stylesheet" href="/styles.css" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 
   <!-- QR Code (one copy only) -->
   <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
@@ -17,7 +18,7 @@
 <body class="container py-3">
 
   <header class="mb-3 d-flex align-items-center gap-2">
-    <img src="/logo.png" alt="Logo" height="36" onerror="this.style.display='none'">
+    <img src="./pictures/ctl.png" alt="Logo" height="36" onerror="this.style.display='none'">
     <h1 class="h4 m-0">CAP Paper Wallet</h1>
     <span class="badge bg-secondary ms-2" id="conn-status">offline</span>
     <span class="ms-auto small text-muted" id="session-email">Logged in as (session)</span>
@@ -91,8 +92,16 @@
     </div><!-- /CONNECT -->
 
     <!-- SETTINGS -->
+
+    <!-- Settings → Security -->
+    
     <div class="tab-pane fade" id="settings" role="tabpanel" aria-labelledby="settings-tab">
       <!-- Display & Region (optional; keep minimal here) -->
+      <div class="row">
+        <button id="genPassBtn">Generate passphrase</button>
+        <button id="revealPassBtn">Reveal</button>
+        <span id="passOut" class="mono"></span>
+      </div>
       <div class="card mb-3">
         <div class="card-body">
           <div class="card-title h6">Display & Region</div>
@@ -115,11 +124,19 @@
         </div>
       </div>
 
+      <div class="row">
+        <button id="fiatSetupBtn">Setup fiat wallet</button>
+        <button id="fiatDepositBtn">Add funds (Stripe)</button>
+        <button id="fiatWithdrawBtn">Withdraw (simulate)</button>
+        <span id="fiatBalance" class="mono">—</span>
+      </div>
+
       <!-- SETTINGS: Security & Backup -->
 <div class="card mb-4">
   <div class="card-header d-flex align-items-center">
     <strong>Security & Backup</strong>
     <span class="badge bg-secondary ms-2">local-first</span>
+    <button id="backupDriveBtn">Back up to Google Drive</button>
   </div>
 
   <div class="card-body">

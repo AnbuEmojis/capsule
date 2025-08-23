@@ -248,7 +248,7 @@
       
       <script>
         function updateWalletInfo() {
-          fetch('/api/wallets/info?address=' + encodeURIComponent(currentWallet))
+          fetch('/api/wallets/api/wallets/info?address=' + encodeURIComponent(currentWallet))
             .then(res => res.json())
             .then(info => {
               document.getElementById('wallet-address').innerText = "Address: " + info.address;

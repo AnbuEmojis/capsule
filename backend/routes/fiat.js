@@ -1,101 +1,82 @@
-// backend/routes/fiat.js
 const express = require('express');
-const router = express.Router();
+const router =  express.Router();
+const Stripe = require('stripe');
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' });
+const FiatWallet = require('../models/FiatWallet');
+const User = require('../models/User');
 
-/**
- * Dev FX + asset price helpers.
- * Override with env if you have a live price feed:
- *   NATIVE_USD, SOL_USD, CAP_NATIVE
- *   FX_USD_CAD, FX_USD_EUR, FX_USD_GBP, FX_USD_AUD, FX_USD_JPY
- */
-
-const num = (v, d) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
-};
-
-// USD -> CCY
-function fxUsdTo(ccy) {
-  const up = (ccy || '').toUpperCase();
-  const envName = `FX_USD_${up}`;
-  const env = num(process.env[envName], NaN);
-  if (Number.isFinite(env)) return env;
-
-  // sane-ish dev defaults
-  const DEF = { CAD: 1.35, USD: 1.0, EUR: 0.92, GBP: 0.78, AUD: 1.50, JPY: 155.0 };
-  return DEF[up] ?? 1.0;
+async function ensureWallet(userId, currency='USD'){
+  let w = await FiatWallet.findOne({ userId });
+  if (!w) w = await FiatWallet.create({ userId, currency, balanceCents:0 });
+  return w;
 }
 
-// CCY -> USD
-function fxToUsd(ccy) {
-  const r = fxUsdTo(ccy);
-  return r ? 1 / r : 1.0;
-}
-
-async function midCapPerNative(req) {
-  // Try AMM reserves via internal call (works in dev)
-  try {
-    const base = `${req.protocol}://${req.get('host')}`;
-    const r = await fetch(`${base}/api/liquidity/reserves`).then(r => r.json());
-    const cap = Number(r?.CAP || r?.cap || 0);
-    const nat = Number(r?.NATIVE || r?.native || 0);
-    if (cap > 0 && nat > 0) {
-      // price (CAP → NATIVE) ≈ natReserve / capReserve
-      return nat / cap;
-    }
-  } catch (_) {}
-
-  // fallback to env (e.g., 0.01 NATIVE per CAP)
-  return num(process.env.CAP_NATIVE, 0.01);
-}
-
-function nativeUsd() {
-  return num(process.env.NATIVE_USD, 1.0); // dev: peg NATIVE≈$1
-}
-
-function solUsd() {
-  return num(process.env.SOL_USD, 150.0); // dev default
-}
-
-router.get('/convert', async (req, res) => {
-  try {
-    const asset = String(req.query.asset || 'NATIVE').toUpperCase();
-    const amount = num(req.query.amount, 0);
-    const to = String(req.query.to || 'USD').toUpperCase();
-    if (!(amount > 0)) return res.status(400).json({ message: 'amount > 0 required' });
-
-    let usd = 0;
-
-    if (asset === 'NATIVE') {
-      usd = amount * nativeUsd();
-    } else if (asset === 'SOL') {
-      usd = amount * solUsd();
-    } else if (asset === 'CAP') {
-      const capNative = await midCapPerNative(req); // CAP→NATIVE
-      usd = amount * capNative * nativeUsd();
-    } else {
-      // Unknown asset → treat like NATIVE
-      usd = amount * nativeUsd();
-    }
-
-    const value = usd * fxUsdTo(to);
-
-    res.json({
-      asset,
-      amount,
-      to,
-      value,
-      usd,
-      meta: {
-        NATIVE_USD: nativeUsd(),
-        SOL_USD: solUsd(),
-        CAP_NATIVE: await midCapPerNative(req),
-        FX_USD_TO: fxUsdTo(to)
-      }
-    });
-  } catch (e) {
-    res.status(500).json({ message: 'convert failed', error: String(e?.message || e) });
+// Ensure Stripe customer + wallet
+router.post('/init', async (req,res)=>{
+  const userId = req.user?.id || req.body.userId;
+  const user = await User.findById(userId);
+  if (!user) return res.status(401).json({ error:'auth' });
+  if (!user.stripeCustomerId){
+    const customer = await stripe.customers.create({ email: user.email, name: user.name || undefined });
+    user.stripeCustomerId = customer.id; await user.save();
   }
+  const wallet = await ensureWallet(user._id);
+  res.json({ ok:true, balanceCents: wallet.balanceCents, currency: wallet.currency, stripeCustomerId: user.stripeCustomerId });
+});
+
+// Create a deposit Checkout session
+router.post('/deposit-checkout', async (req,res)=>{
+  const userId = req.user?.id || req.body.userId;
+  const { amountCents, currency='usd' } = req.body;
+  const user = await User.findById(userId);
+  if (!user?.stripeCustomerId) return res.status(400).json({ error:'init_required' });
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    customer: user.stripeCustomerId,
+    line_items: [{ price_data: { currency, product_data: { name: 'Fiat wallet top-up' }, unit_amount: amountCents }, quantity:1 }],
+    success_url: `${process.env.PUBLIC_BASE_URL}/paper.html?fiat=success&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${process.env.PUBLIC_BASE_URL}/paper.html?fiat=cancel`,
+    payment_intent_data: { metadata:{ userId: String(user._id), purpose:'fiat_deposit' } }
+  });
+  res.json({ url: session.url });
+});
+
+// Webhook to credit wallet
+// Webhook (dev-friendly: use JSON body so mount order doesn’t matter)
+router.post('/webhook', express.json({ type: 'application/json' }), async (req,res)=>{
+  const event = req.body;
+  if (event.type === 'payment_intent.succeeded'){
+    const pi = event.data.object;
+    if (pi.metadata?.purpose === 'fiat_deposit'){
+      const userId = pi.metadata.userId;
+      const amountCents = pi.amount_received;
+      const w = await ensureWallet(userId);
+      w.balanceCents += amountCents;
+      w.ledger.push({ type:'deposit', amountCents, stripePaymentIntent: pi.id, note:'Stripe deposit' });
+      await w.save();
+    }
+  }
+  res.json({ received:true });
+});
+
+// Read balance
+router.get('/balance', async (req,res)=>{
+  const userId = req.user?.id || req.query.userId;
+  const w = await FiatWallet.findOne({ userId });
+  res.json({ balanceCents: w?.balanceCents || 0, currency: w?.currency || 'USD' });
+});
+
+// Simulated withdraw (deducts and records)
+// For real bank payouts you’d need Stripe Connect + payouts to external account.
+router.post('/withdraw', async (req,res)=>{
+  const userId = req.user?.id || req.body.userId;
+  const { amountCents } = req.body;
+  const w = await ensureWallet(userId);
+  if (amountCents > w.balanceCents) return res.status(400).json({ error:'insufficient_funds' });
+  w.balanceCents -= amountCents;
+  w.ledger.push({ type:'withdraw', amountCents, note:'Simulated withdraw (test)' });
+  await w.save();
+  res.json({ ok:true, balanceCents: w.balanceCents });
 });
 
 module.exports = router;
