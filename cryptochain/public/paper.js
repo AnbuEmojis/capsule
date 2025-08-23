@@ -229,7 +229,53 @@ document.getElementById('fiatWithdrawBtn')?.addEventListener('click', fiatWithdr
       } catch {}
       return localQuote({ mode, amount });
     }
-  
+
+// Save USER_ID once /init works
+window.fiatInit = async function(){
+  const r = await fetch('/api/fiat/init', { method:'POST' });
+  const j = await r.json().catch(()=>null);
+  if (!r.ok) { alert('Fiat setup failed: ' + (j?.error || r.status)); return; }
+  if (j?.userId) {
+    window.USER_ID = j.userId;
+    localStorage.setItem('USER_ID', j.userId);
+  }
+  await fiatRefresh();
+  alert('✅ Fiat wallet ready');
+};
+
+window.fiatRefresh = async function(){
+  const r = await fetch('/api/fiat/balance');
+  if (!r.ok) return; // bail quietly if something’s wrong
+  const j = await r.json().catch(()=>({}));
+  const cur = (j.currency || 'USD').toUpperCase();
+  const cents = Number.isFinite(j.balanceCents) ? j.balanceCents : 0;
+  const el = document.getElementById('fiatBalance');
+  if (el) el.textContent = `${(cents/100).toFixed(2)} ${cur}`;
+};
+
+window.fiatDeposit = async function(){
+  const amount = prompt('Deposit amount (USD):','10.00'); if (!amount) return;
+  const r = await fetch('/api/fiat/deposit-checkout', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ amountCents: Math.round(parseFloat(amount)*100), currency:'usd' })
+  });
+  const j = await r.json().catch(()=>null);
+  if (!r.ok || !j?.url) { alert('Could not start Stripe Checkout'); return; }
+  location.assign(j.url);
+};
+
+window.fiatWithdraw = async function(){
+  const amount = prompt('Withdraw amount (USD):','5.00'); if (!amount) return;
+  const r = await fetch('/api/fiat/withdraw', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ amountCents: Math.round(parseFloat(amount)*100) })
+  });
+  if (!r.ok) { alert('Withdraw failed'); return; }
+  fiatRefresh();
+};
+
     // -------- balances (server best-effort) --------
     async function getCapBalance(capAddr){
       if (!capAddr) return { capTokens:0, native:0 };

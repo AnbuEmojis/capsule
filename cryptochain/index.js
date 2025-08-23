@@ -43,6 +43,8 @@ const nftBridgeRoutes    = require('./routes/bridge');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+
+
 // Core middleware
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -75,6 +77,28 @@ mongoose.connect(MONGO_URI)
 
 (async () => {
   await ready;
+
+  // DEV fake auth (for local testing only)
+if (process.env.DEV_FAKE_AUTH === '1') {
+  const User = require('../backend/models/User');
+  app.use(async (req, res, next) => {
+    try {
+      if (!req.user) {
+        const email = process.env.DEMO_EMAIL || 'demo@local';
+        let u = await User.findOne({ email });
+        if (!u) u = await User.create({ email, name: 'Demo User' });
+        req.user = { id: u._id };
+        req.session = req.session || {};
+        req.session.userId = String(u._id);
+      }
+      next();
+    } catch (e) {
+      console.error('dev fake auth error', e);
+      res.status(500).json({ error: 'dev_auth_failed' });
+    }
+  });
+}
+
 
   // Share singletons for routes
   app.locals.blockchain      = blockchain;
