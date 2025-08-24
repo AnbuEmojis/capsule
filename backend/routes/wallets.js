@@ -1,54 +1,52 @@
 const express = require('express');
-const router  = express.Router();
-
-// On-chain pieces you already have:
-const Wallet  = require('../../cryptochain/wallet');
-const { calculateTokenBalance } = require('../../cryptochain/token/token-balance');
-
-// Fiat model
+const router = express.Router();
 const FiatWallet = require('../models/FiatWallet');
 
-// GET /api/wallets/info?address=04...  (CAP addr, uncompressed hex)
+const chainOf = (app) => app?.locals?.chain || app?.locals?.ledger || null;
+const poolOf  = (app) => app?.locals?.pool  || app?.locals?.liquidityPool || null;
+const userKeyOf = (req) => {
+  const u = req.user;
+  return u ? String(u._id || u.id || u.sub || u.email) : null;
+};
+
+// GET /api/wallets/info?address=<capPubkeyHex>
 router.get('/info', async (req, res) => {
   try {
-    const address = (req.query.address || '').trim();
-    res.set('Cache-Control', 'no-store');  // <-- add this
-    if (!address) return res.status(400).json({ message:'missing address' });
+    const { address } = req.query;
+    if (!address) return res.status(400).json({ error: 'missing_address' });
 
-    // — On-chain balances (existing behavior) —
-    const bc = req.app.locals.blockchain;
-    let native = 0, capTokens = 0;
+    const chain = chainOf(req.app);
+    const pool  = poolOf(req.app);
 
-    if (bc) {
-      // native
-      const account = bc.accountMap?.[address] || bc.accounts?.[address];
-      native = Number(account?.balance || 0);
-      // tokens
-      try { capTokens = calculateTokenBalance(bc, 'CAP', address) || 0; } catch {}
+    let capTokens = 0;
+    let nativeOnChain = 0;
+
+    if (chain?.getBalance) capTokens = Number(chain.getBalance(address) || 0);
+    if (chain?.getNativeBalance) {
+      nativeOnChain = Number(chain.getNativeBalance(address) || 0);
+    } else if (pool?.getAccountNative) {
+      nativeOnChain = Number(pool.getAccountNative(address) || 0);
     }
 
-    // — Fiat wallet (NATIVE == $1) —
-    let fiat = { balanceCents: 0, currency: 'USD' };
+    // Optional fiat (mapped to NATIVE) if logged in
+    let nativeFromFiat = null;
+    let currency = 'USD';
     try {
-      if (req.user) {
-        const fw = await FiatWallet.findByUser(req.user);
-        if (fw) fiat = { balanceCents: fw.balanceCents, currency: fw.currency };
+      const userKey = userKeyOf(req);
+      if (userKey) {
+        const fw = await FiatWallet.findOne({ userKey }).lean();
+        if (fw) {
+          nativeFromFiat = (Number(fw.balanceCents || 0) / 100);
+          currency = fw.currency || 'USD';
+        }
       }
-    } catch (e) {
-      // Never crash the endpoint on cast errors; just log and continue.
-      console.warn('wallets/info fiat lookup warn:', e?.message || e);
-    }
+    } catch {}
 
-    return res.json({
-      address,
-      native,
-      capTokens,
-      fiat
-    });
+    res.json({ address, capTokens, nativeOnChain, nativeFromFiat, currency });
   } catch (e) {
-    return res.status(500).json({ message:'info failed', error: String(e?.message || e) });
+    console.error('wallets/info error', e);
+    res.status(500).json({ error: 'internal_error' });
   }
 });
 
-// (you can keep any other routes below, unchanged)
 module.exports = router;
