@@ -15,8 +15,24 @@
   <!-- QR Code (one copy only) -->
   <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 </head>
-<script>window.FIAT_BASE = 'http://localhost:3001';</script>
-
+<script>
+  (function(){
+    const API = 'http://localhost:3001';
+    const url = new URL(location.href);
+    const sid = url.searchParams.get('session_id');
+  
+    if (sid && !sessionStorage.getItem('fiat-confirmed:'+sid)) {
+      fetch(`${API}/api/fiat/confirm?session_id=${encodeURIComponent(sid)}`)
+        .finally(() => {
+          sessionStorage.setItem('fiat-confirmed:'+sid, '1');
+          url.searchParams.delete('session_id');
+          url.searchParams.delete('fiat');
+          history.replaceState({}, '', url);
+          setTimeout(()=> window.fiatRefresh && window.fiatRefresh(), 0);
+        });
+    }
+  })();
+  </script>
 <style>
   :root{
     --brand:#00e0ff; --brand2:#6c5ce7; --bg:#0b1220; --ink:#e6f1ff; --muted:#9fb2c8; --ring:rgba(0,224,255,.35);
@@ -501,10 +517,10 @@
 
   <!-- Bootstrap JS (optional for tabs) -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="dev-shim.js?v=dev8"></script>
+  <script src="/paper.js"></script>
   <script>window.FIAT_BASE = 'http://localhost:3001';</script>
-  <script src="dev-shim.js?v=dev3"></script>
   
   <!-- App script -->
-  <script src="/paper.js"></script>
 </body>
 </html>

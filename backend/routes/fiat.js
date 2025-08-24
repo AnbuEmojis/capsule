@@ -14,13 +14,37 @@ const STRIPE_USABLE =
 
 const stripe = STRIPE_USABLE ? new Stripe(rawKey, { apiVersion: '2024-06-20' }) : null;
 
-const FiatWallet = require('../models/FiatWallet');
-const User = require('../models/User');
+// --- Models ---
+const mongoose = require('mongoose');
 
-// helpers
-function uid(req){ return req.user?.id || req.session?.userId || req.body?.userId || req.query?.userId || null; }
-function looksEmail(s){ return typeof s === 'string' && /.+@.+\..+/.test(s); }
+const UserSchema = new mongoose.Schema({
+  email: { type:String, index:true },
+  name: String,
+  stripeCustomerId: String,
+}, { timestamps:true });
+const User = mongoose.models.User || mongoose.model('User', UserSchema);
 
+const FiatWalletSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, index: true, required: true },
+  currency: { type: String, default: 'USD' },
+  balanceCents: { type: Number, default: 0 },
+  ledger: [{
+    type: { type: String, enum: ['deposit','withdraw'] },
+    amountCents: Number,
+    stripePaymentIntent: String,
+    note: String,
+    at: { type: Date, default: Date.now }
+  }]
+}, { timestamps:true });
+FiatWalletSchema.index({ userId:1, 'ledger.stripePaymentIntent':1 });
+const FiatWallet = mongoose.models.FiatWallet || mongoose.model('FiatWallet', FiatWalletSchema);
+
+// ----------------- helpers -----------------
+function looksEmail(s){ return typeof s === 'string' && /.+@.+/.test(s); }
+function uid(req){
+  const h = (req.headers['x-user-id'] || req.headers['x-dev-user'] || '').trim();
+  return h || null;
+}
 async function ensureUser(req){
   let user = null;
   const id = uid(req);
@@ -31,11 +55,14 @@ async function ensureUser(req){
   }
   return user;
 }
-
 async function ensureWallet(userId, currency='USD'){
   let w = await FiatWallet.findOne({ userId });
   if (!w) w = await FiatWallet.create({ userId, currency, balanceCents:0, ledger:[] });
   return w;
+}
+function alreadyCredited(wallet, piId) {
+  if (!piId) return false;
+  return !!(wallet.ledger || []).some(e => e.type === 'deposit' && e.stripePaymentIntent === piId);
 }
 
 // ---------- INIT (POST) ----------
@@ -79,38 +106,34 @@ router.post('/init', async (req,res)=>{
 router.post('/deposit-checkout', async (req,res)=>{
   try{
     const { amountCents, currency='usd' } = req.body || {};
-    if (!amountCents || amountCents <= 0) return res.status(400).json({ error:'invalid_amount' });
+    if (!amountCents || amountCents <= 0) return res.status(400).json({ error:'bad_amount' });
 
     const user = await ensureUser(req);
-    const wallet = await ensureWallet(user._id);
+    if (!STRIPE_USABLE) return res.status(400).json({ error:'stripe_disabled' });
 
-    if (!STRIPE_USABLE) {
-      wallet.balanceCents += amountCents;
-      wallet.ledger.push({ type:'deposit', amountCents, note:'Simulated deposit (dev)' });
-      await wallet.save();
-      const base = process.env.PUBLIC_BASE_URL || 'http://localhost:3000';
-      return res.json({ url: `${base}/paper.html?fiat=success&sim=1` });
-    }
-
-    const params = {
+    const session = await stripe.checkout.sessions.create({
+      customer: user.stripeCustomerId || undefined,
       mode: 'payment',
+      allow_promotion_codes: true,
+      currency,
       line_items: [{
+        quantity: 1,
         price_data: {
           currency,
-          product_data: { name: 'Fiat wallet top-up' },
-          unit_amount: amountCents
-        },
-        quantity: 1
+          unit_amount: amountCents,
+          product_data: { name: 'Fiat wallet deposit' }
+        }
       }],
-      success_url: `${process.env.PUBLIC_BASE_URL}/paper.html?fiat=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.PUBLIC_BASE_URL}/paper.html?fiat=cancel`,
-      payment_intent_data: { metadata: { userId: String(user._id), purpose:'fiat_deposit' } }
-    };
+      payment_intent_data: {
+        metadata: {
+          purpose: 'fiat_deposit',
+          userId: String(user._id)
+        }
+      },
+      success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/paper.html?fiat=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url:  `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/paper.html?fiat=cancel`
+    });
 
-    if (user.stripeCustomerId) params.customer = user.stripeCustomerId;
-    else if (looksEmail(user.email)) params.customer_email = user.email;
-
-    const session = await stripe.checkout.sessions.create(params);
     return res.json({ url: session.url });
   } catch (e) {
     console.error('/api/fiat/deposit-checkout', e);
@@ -119,7 +142,6 @@ router.post('/deposit-checkout', async (req,res)=>{
 });
 
 // ---------- CONFIRM (GET) ----------
-// /api/fiat/confirm?session_id=cs_test_...
 router.get('/confirm', async (req, res) => {
   try {
     if (!STRIPE_USABLE) return res.status(400).json({ error: 'stripe_disabled' });
@@ -134,10 +156,15 @@ router.get('/confirm', async (req, res) => {
       const userId = pi?.metadata?.userId;
       const user = userId ? { _id: userId } : await ensureUser(req);
       const wallet = await ensureWallet(user._id);
-      wallet.balanceCents += amount;
-      wallet.ledger.push({ type: 'deposit', amountCents: amount, stripePaymentIntent: pi?.id, note: 'Stripe Checkout confirm' });
-      await wallet.save();
-      return res.json({ ok: true, balanceCents: wallet.balanceCents, credited: amount });
+
+      const dup = alreadyCredited(wallet, pi?.id);
+      if (!dup) {
+        wallet.balanceCents += amount;
+        wallet.ledger.push({ type: 'deposit', amountCents: amount, stripePaymentIntent: pi?.id, note: 'Stripe Checkout confirm' });
+        await wallet.save();
+      }
+
+      return res.json({ ok: true, balanceCents: wallet.balanceCents, credited: dup ? 0 : amount, alreadyCredited: dup });
     }
     return res.status(202).json({ pending: true, status: session.status, payment_status: session.payment_status });
   } catch (e) {
@@ -151,13 +178,19 @@ router.post('/webhook', express.json({ type:'application/json' }), async (req,re
   try{
     if (!STRIPE_USABLE) return res.json({ received:true, disabled:true });
     const event = req.body;
+
     if (event.type === 'payment_intent.succeeded'){
       const pi = event.data.object;
       if (pi.metadata?.purpose === 'fiat_deposit'){
-        const wallet = await ensureWallet(pi.metadata.userId);
-        wallet.balanceCents += pi.amount_received;
-        wallet.ledger.push({ type:'deposit', amountCents: pi.amount_received, stripePaymentIntent: pi.id, note:'Stripe deposit' });
-        await wallet.save();
+        const userId = pi.metadata.userId;
+        const wallet = await ensureWallet(userId);
+        const dup = alreadyCredited(wallet, pi.id);
+        if (!dup) {
+          wallet.balanceCents += pi.amount_received;
+          wallet.ledger.push({ type:'deposit', amountCents: pi.amount_received, stripePaymentIntent: pi.id, note:'Stripe deposit' });
+          await wallet.save();
+        }
+        return res.json({ received:true, alreadyCredited: dup });
       }
     }
     return res.json({ received:true });

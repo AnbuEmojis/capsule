@@ -1,75 +1,57 @@
-(function(){
-  const BASE = (typeof window !== 'undefined' && window.FIAT_BASE) ? window.FIAT_BASE : 'http://localhost:3001';
+/* dev-shim.js v10 — route all /api/fiat/* requests to http://localhost:3001 */
+(() => {
+  const REAL_FETCH = window.fetch.bind(window);
+  const DEV_FIAT_ORIGIN = 'http://localhost:3001';
 
-  async function jfetch(path, opts){
-    const r = await fetch(`${BASE}${path}`, { credentials:'include', ...opts });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const ct = r.headers.get('content-type') || '';
-    return ct.includes('application/json') ? r.json() : r.text();
+  function toURL(input) {
+    if (input instanceof Request) return new URL(input.url, window.location.origin);
+    if (typeof input === 'string') return new URL(input, window.location.origin);
+    return null;
   }
 
-  window.fiatInit = async function(){ try { await jfetch('/api/fiat/init',{method:'POST'}); } catch(_){ } if (window.fiatRefresh) window.fiatRefresh(); };
+  async function devFetch(input, init = {}) {
+    try {
+      const url = toURL(input);
+      if (url && url.pathname.startsWith('/api/fiat/')) {
+        // Force to :3001
+        const routed = new URL(url.toString());
+        routed.protocol = 'http:';       // keep local
+        routed.hostname = 'localhost';
+        routed.port = '3001';
 
-  window.fiatRefresh = async function(){
-    try{
-      const j = await jfetch('/api/fiat/balance',{method:'GET'});
-      const cur = (j?.currency||'USD').toUpperCase();
-      const cents = Number.isFinite(j?.balanceCents) ? j.balanceCents : 0;
-      const el = document.getElementById('fiatBalance');
-      if (el) el.textContent = `${(cents/100).toFixed(2)} ${cur}`;
-    }catch(_){}
-  };
+        // Always no-store + include creds
+        const headers = new Headers(init && init.headers || (input instanceof Request ? input.headers : undefined));
+        if (!headers.has('cache-control')) headers.set('cache-control', 'no-store');
+        if (!headers.has('content-type') && init && init.body && typeof init.body === 'string') {
+          headers.set('content-type', 'application/json');
+        }
+        const opts = { ...init, credentials: 'include', headers };
 
-  window.fiatDeposit = async function(amountCents){
-    const amt = Number(amountCents); if (!Number.isFinite(amt)||amt<=0) return;
-    const data = await jfetch('/api/fiat/deposit-checkout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amountCents:amt,currency:'usd'})});
-    if (data?.url) location.href = data.url;
-  };
-
-  window.fiatWithdraw = async function(amountCents){
-    const amt = Number(amountCents); if (!Number.isFinite(amt)||amt<=0) return;
-    await jfetch('/api/fiat/withdraw',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amountCents:amt})});
-    if (window.fiatRefresh) window.fiatRefresh();
-  };
-
-  async function syncOnchainBalances(){
-    try{
-      const addr = (window.currentWallet)||localStorage.getItem('walletAddress')||document.getElementById('address')?.textContent?.trim()||'';
-      if (!addr) return;
-      const res = await fetch(`${location.origin}/api/wallets/info?address=${encodeURIComponent(addr)}`,{credentials:'include'});
-      if (!res.ok) return;
-      const info = await res.json();
-      const n = Number(info?.balances?.NATIVE ?? info?.native ?? 0);
-      const c = Number(info?.balances?.CAP    ?? info?.cap    ?? 0);
-      const nb = document.getElementById('nativeBalance');
-      const cb = document.getElementById('capBalance');
-      if (nb) nb.textContent = (Number.isFinite(n)?n.toFixed(6):'0.000000');
-      if (cb) cb.textContent = (Number.isFinite(c)?c.toFixed(6):'0.000000');
-    }catch(_){}
+        if (input instanceof Request) {
+          const req = new Request(routed.toString(), { ...opts, method: input.method, body: opts.body ?? input.body });
+          return REAL_FETCH(req);
+        }
+        return REAL_FETCH(routed.toString(), opts);
+      }
+    } catch (e) {
+      console.warn('[dev-shim] fallback due to error:', e);
+    }
+    return REAL_FETCH(input, init);
   }
 
-  const _fetch = window.fetch;
-  window.fetch = async function(url, opts){
-    const u = typeof url==='string' ? url : (url?.url||'');
-    const method = (opts?.method||'GET').toUpperCase();
-    const p = _fetch.apply(this, arguments);
-    try{
-      const r = await p;
-      const isApi = (typeof u==='string') && u.includes('/api/');
-      const mutates = method==='POST' && (u.includes('/fiat/')||u.match(/\/(swap|trade|exchange|pool)\b/));
-      if (isApi && mutates) setTimeout(()=>{ syncOnchainBalances(); if (window.fiatRefresh) window.fiatRefresh(); }, 400);
-      return r;
-    }catch(e){ throw e; }
+  // Provide a tiny helper the page can call to re-pull CAP/NATIVE after fiat changes
+  window.syncOnchainBalances = async (capAddr) => {
+    try {
+      const r = await devFetch('/api/wallets/info?address=' + encodeURIComponent(capAddr));
+      if (!r.ok) return;
+      const data = await r.json();
+      // Update the two lines if they exist (IDs are already in paper.html)
+      const capLine = document.querySelector('#cap-balance-line');
+      const natLine = document.querySelector('#native-balance-line');
+      if (capLine) capLine.textContent = `CAP tokens: ${(+data.capTokenBalance).toLocaleString()} (≈ NATIVE)`;
+      if (natLine) natLine.textContent = `NATIVE: ${(+data.balance).toLocaleString()}`;
+    } catch {}
   };
 
-  (function(){ // Stripe success auto-confirm
-    try{
-      const q=new URLSearchParams(location.search); const sid=q.get('session_id'); if(!sid) return;
-      fetch(`${BASE}/api/fiat/confirm?session_id=${encodeURIComponent(sid)}`)
-        .then(()=>{ setTimeout(()=>{ if (window.fiatRefresh) window.fiatRefresh(); syncOnchainBalances(); }, 500); })
-        .catch(()=>{});
-    }catch(_){}
-  })();
-
-  setTimeout(()=>{ syncOnchainBalances(); if (window.fiatRefresh) window.fiatRefresh(); }, 300);
+  window.fetch = devFetch;
 })();

@@ -1,61 +1,54 @@
-// backend/routes/wallets.js
 const express = require('express');
 const router  = express.Router();
+
+// On-chain pieces you already have:
 const Wallet  = require('../../cryptochain/wallet');
 const { calculateTokenBalance } = require('../../cryptochain/token/token-balance');
 
-// In-memory wallet lists per userId
-// NOTE: dev-only persistence; restart will reset this (which is fine for dev)
-const walletsByUser = new Map();
+// Fiat model
+const FiatWallet = require('../models/FiatWallet');
 
-// Helper to read & init a user's list
-function getUserList(userId) {
-  if (!walletsByUser.has(userId)) walletsByUser.set(userId, []);
-  return walletsByUser.get(userId);
-}
-
-/** GET /api/wallets
- * Returns the current user's wallet addresses only.
- */
-router.get('/', (req, res) => {
-  const userId = req.user?.userId || 'anon';
-  const list = getUserList(userId);
-  return res.json(list);
-});
-
-/** POST /api/wallets/generate
- * Creates a new wallet for the current user. Returns { publicKey, privateKey }.
- * (Client stores privateKey in localStorage. Server does NOT store keys.)
- */
-router.post('/generate', (req, res) => {
-  const userId = req.user?.userId || 'anon';
-  const wallet = new Wallet();
-  const publicKey  = wallet.publicKey;
-  const privateKey = wallet.keyPair.getPrivate().toString(16);
-  const list = getUserList(userId);
-  list.push(publicKey);
-  return res.json({ publicKey, privateKey });
-});
-
-/** GET /api/wallets/info?address=<pubkey>
- * Returns { address, balance (NATIVE), capTokenBalance } for any address.
- * (We don’t restrict info to owner so explorers/tools can query)
- */
-router.get('/info', (req, res) => {
-  const address = String(req.query.address || '');
-  if (!address) return res.status(400).json({ message: 'Missing address' });
-
-  const blockchain = req.app.locals.blockchain;
-  if (!blockchain) return res.status(503).json({ message: 'Chain not ready' });
-
+// GET /api/wallets/info?address=04...  (CAP addr, uncompressed hex)
+router.get('/info', async (req, res) => {
   try {
-    const nativeBalance = Wallet.calculateBalance({ chain: blockchain.chain, address });
-    const capTokenBalance = calculateTokenBalance({ chain: blockchain.chain, address, symbol: 'CAP' });
-    return res.json({ address, balance: nativeBalance, capTokenBalance });
+    const address = (req.query.address || '').trim();
+    res.set('Cache-Control', 'no-store');  // <-- add this
+    if (!address) return res.status(400).json({ message:'missing address' });
+
+    // — On-chain balances (existing behavior) —
+    const bc = req.app.locals.blockchain;
+    let native = 0, capTokens = 0;
+
+    if (bc) {
+      // native
+      const account = bc.accountMap?.[address] || bc.accounts?.[address];
+      native = Number(account?.balance || 0);
+      // tokens
+      try { capTokens = calculateTokenBalance(bc, 'CAP', address) || 0; } catch {}
+    }
+
+    // — Fiat wallet (NATIVE == $1) —
+    let fiat = { balanceCents: 0, currency: 'USD' };
+    try {
+      if (req.user) {
+        const fw = await FiatWallet.findByUser(req.user);
+        if (fw) fiat = { balanceCents: fw.balanceCents, currency: fw.currency };
+      }
+    } catch (e) {
+      // Never crash the endpoint on cast errors; just log and continue.
+      console.warn('wallets/info fiat lookup warn:', e?.message || e);
+    }
+
+    return res.json({
+      address,
+      native,
+      capTokens,
+      fiat
+    });
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ message: 'Error calculating balances' });
+    return res.status(500).json({ message:'info failed', error: String(e?.message || e) });
   }
 });
 
+// (you can keep any other routes below, unchanged)
 module.exports = router;

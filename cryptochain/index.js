@@ -1,185 +1,184 @@
-// cryptochain/index.js
+// cryptochain/index.js  — safe + minimal mounts, correct ../backend paths, public /api/wallets/info
 const path = require('path');
 const express = require('express');
 const mongoose = require('mongoose');
+const { createProxyMiddleware } = require('http-proxy-middleware');
+const jwt = require('jsonwebtoken');
+
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
+// ---- project singletons ----
+const Wallet = require('./wallet');
+const { calculateTokenBalance } = require('./token/token-balance');
 const {
   blockchain, transactionPool, miner, pool, savePool, shutdown, ready
 } = require('./state');
 
-
-// Routers (backend)
-const proposalsRoutes    = require('../backend/routes/proposals');
-const storeitemsRoutes   = require('../backend/routes/storeitems');
-const stakesRoutes       = require('../backend/routes/stakes');
-const walletsRoutes      = require('../backend/routes/wallets');
-const swapsRoutes        = require('../backend/routes/swaps');
-const transactionsRoutes = require('../backend/routes/transactions');
-const liquidityRoutes    = require('../backend/routes/liquidity');
-const authRoutes         = require('../backend/routes/auth');
-const ratesRoutes        = require('../backend/routes/rates');
-const tokenRoutes        = require('../backend/routes/token');
-const miningRoutes       = require('../backend/routes/mining');
-const explorerRoutes     = require('../backend/routes/explorer');
-const bridgeRoutes       = require('../backend/routes/bridge');
-const fiatRoutes         = require('../backend/routes/fiat');
-const quotesRoutes       = require('../backend/routes/quotes');
-const transfersRoutes    = require('../backend/routes/transfers');
-const taxRoutes          = require('../backend/routes/tax');
-const geoRoutes          = require('../backend/routes/geo');
-const feesRoutes         = require('../backend/routes/fees');
-const rewardsRoutes      = require('../backend/routes/rewards');
-const profileRoutes      = require('../backend/routes/profile');
-const passport           = require('../backend/oauth/passport'); 
-const oauthRoutes        = require('../backend/routes/oauth');
-const solanaRoutes       = require('../backend/routes/solana');
-const pricesRoutes = require('../backend/routes/prices');
-const { createProxyMiddleware } = require('http-proxy-middleware');
-
-
-// Routers (cryptochain local)
-const stakingRoutes      = require('./routes/staking');
-const nftsRoutes         = require('./routes/nfts');       
-const nftBridgeRoutes    = require('./routes/bridge');     
-
-const app  = express();
+const app = express();
+app.set('etag', false)
 const PORT = process.env.PORT || 3000;
 
-// AFTER you create `app = express()` and BEFORE any catch-all static handlers,
-// add this:
-  app.use('/api/fiat',
-    createProxyMiddleware({
-      target: 'http://localhost:3001',
-      changeOrigin: true,
-      proxyTimeout: 10000,
-      onError(err, req, res) {
-        console.error('[fiat-proxy]', err.code || err.message);
-        res.status(502).json({ error: 'fiat_proxy_error', detail: err.code || 'proxy_failed' });
-      },
-    })
-  );
-
-
-// Core middleware
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-app.use(passport.initialize());
-
-// DEV fake auth (for local testing only)
-if (process.env.DEV_FAKE_AUTH === '1') {
-const User = require('../backend/models/User');
-app.use(async (req, res, next) => {
+// ---------- helpers ----------
+function safeRequire(rel) {
   try {
-    if (!req.user) {
-      const email = process.env.DEMO_EMAIL || 'demo@local';
-      let u = await User.findOne({ email });
-      if (!u) u = await User.create({ email, name: 'Demo User' });
-      req.user = { id: u._id };
-      req.session = req.session || {};
-      req.session.userId = String(u._id);
-    }
-    next();
+    return require(path.join(__dirname, '..', rel));
   } catch (e) {
-    console.error('dev fake auth error', e);
-    res.status(500).json({ error: 'dev_auth_failed' });
+    console.warn('⚠️  Route not found (skipping):', rel);
+    return null;
   }
-});
 }
-// Inline JWT guard (shared secret)
-const jwt = require('jsonwebtoken');
-function getJwtSecret() {
-  const s = process.env.JWT_SECRET;
-  if (!s) throw new Error('JWT_SECRET not set');
-  return s;
+
+function tryRequireAny(candidates = []) {
+  for (const rel of candidates) {
+    try {
+      const m = require(require('path').join(__dirname, '..', rel));
+      console.log('✅ mounted route:', rel);
+      return m;
+    } catch (e) {
+      // continue
+    }
+  }
+  console.warn('⚠️  none of the route paths resolved:', candidates.join(', '));
+  return null;
 }
+
+
+
+// auth middleware (JWT or dev bypass)
 function auth(req, res, next) {
+  if (process.env.DEV_FAKE_AUTH === '1') {
+    // dev mode: synthesize a user id
+    const devUser = req.headers['x-dev-user'] || 'dev@local';
+    req.user = { id: devUser };            // keep as string to avoid ObjectId cast issues
+    req.session = req.session || {};
+    req.session.userId = devUser;
+    return next();
+  }
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : null;
   if (!token) return res.status(401).json({ message: 'Missing token' });
   try {
-    req.user = jwt.verify(token, getJwtSecret());
+    const secret = process.env.JWT_SECRET || 'dev-secret';
+    req.user = jwt.verify(token, secret);
     next();
   } catch {
     return res.status(401).json({ message: 'Invalid token' });
   }
 }
 
-// Optional Mongo
+// ---------- core middleware ----------
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// proxy all fiat calls to :3001 (only proxy here; do NOT also mount a local fiat router)
+app.use(
+  '/api/fiat',
+  createProxyMiddleware({
+    target: 'http://localhost:3001',
+    changeOrigin: true,
+    proxyTimeout: 10000,
+    onError(err, req, res) {
+      console.error('[fiat-proxy]', err.code || err.message);
+      res.status(502).json({ error: 'fiat_proxy_error', detail: err.code || 'proxy_failed' });
+    },
+  })
+);
+
+// ---------- Mongo (optional) ----------
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/centratech';
-mongoose.connect(MONGO_URI)
+mongoose
+  .connect(MONGO_URI)
   .then(() => console.log('✅ MongoDB connected'))
   .catch(err => console.warn('⚠️ MongoDB connect failed:', err.message));
 
+// ---------- start after chain ready ----------
 (async () => {
   await ready;
 
-
-
-  // Share singletons for routes
+  // share singletons
   app.locals.blockchain      = blockchain;
   app.locals.transactionPool = transactionPool;
   app.locals.miner           = miner;
   app.locals.pool            = pool;
   app.locals.savePool        = savePool;
 
-  // Public OAuth endpoints (popup flow)
-  app.use('/api/oauth', oauthRoutes);
+  // ---------- PUBLIC endpoints (NO AUTH) ----------
+  // Wallet read-only info must stay public; the router under /api/wallets may also define /info,
+  // so register this *before* mounting /api/wallets to avoid 401s / ObjectId casts.
+  app.get('/api/wallets/info', (req, res) => {
+    const address = String(req.query.address || '');
+    if (!address) return res.status(400).json({ message: 'Missing address' });
+    const bc = req.app.locals.blockchain;
+    if (!bc) return res.status(503).json({ message: 'Chain not ready' });
+    try {
+      const nativeBalance = Wallet.calculateBalance({ chain: bc.chain, address });
+      const capTokenBalance = calculateTokenBalance({ chain: bc.chain, address, symbol: 'CAP' });
+      res.json({ address, balance: nativeBalance, capTokenBalance });
+    } catch (e) {
+      res.status(500).json({ message: 'Error calculating balances' });
+    }
+  });
 
-  // Public/auth mix
-  app.use('/api/auth',            authRoutes);             // login/signup (router handles)
-  app.use('/api/quotes',          quotesRoutes);           // read-only quotes (public)
-  app.use('/api/fiat',            auth, fiatRoutes);       // fiat conversions (auth)
-  app.use('/api/tax',             auth, taxRoutes);        // tax estimates (auth)
+  // ---------- AUTH-PROTECTED routes (optional mounts; skipped if file missing) ----------
+  const useIf = (mountPath, router) => router && app.use(mountPath, auth, router);
 
-  // Auth-protected core
-  app.use('/api/wallets',         auth, walletsRoutes);
-  app.use('/api/swaps',           auth, swapsRoutes);
-  app.use('/api/transfers',       auth, transfersRoutes);
-  app.use('/api/liquidity',       auth, liquidityRoutes);
-  app.use('/api/transactions',    auth, transactionsRoutes);
-  app.use('/api/rates',           auth, ratesRoutes);
-  app.use('/api/token',           auth, tokenRoutes);
-  app.use('/api/mining',          auth, miningRoutes);
-  app.use('/api/explorer',        auth, explorerRoutes);
-  app.use('/api/bridge',          auth, bridgeRoutes);
-  app.use('/api/bridge-nft',      auth, nftBridgeRoutes);
-  app.use('/api/geo',             geoRoutes);
-  app.use('/api/fees',            feesRoutes);
-  app.use('/api/rewards',         rewardsRoutes);
-  app.use('/api/profile',         profileRoutes); // router enforces its own auth
-  app.use('/api/prices', pricesRoutes);
-  app.use('/api/solana', require('../backend/routes/solana'));
-  app.use('/api/wallets', require('../backend/routes/wallets'));
-  app.use('/api/fiat',    require('../backend/routes/fiat'));
-  app.use('/api/user',    require('../backend/routes/user'));
-  app.use('/api/rewards', require('../backend/routes/rewards'));
+  const walletsRoutes   = safeRequire('backend/routes/wallets');
+  const swapsRoutes = tryRequireAny([
+    'backend/routes/swaps',
+    'routes/swaps',          // fallback if you moved it
+  ]);
+  
+  if (swapsRoutes) {
+    // if you use auth middleware, keep it; otherwise mount public while dev’ing
+    if (process.env.DEV_OPEN_ROUTES === '1') app.use('/api/swaps', swapsRoutes);
+    else app.use('/api/swaps', auth, swapsRoutes);
+  }
+    const transfersRoutes = safeRequire('backend/routes/transfers');
+  const liquidityRoutes = safeRequire('backend/routes/liquidity');
+  const txRoutes        = safeRequire('backend/routes/transactions');
+  const ratesRoutes     = safeRequire('backend/routes/rates');
+  const tokenRoutes     = safeRequire('backend/routes/token');
+  const miningRoutes    = safeRequire('backend/routes/mining');
+  const explorerRoutes  = safeRequire('backend/routes/explorer');
+  const bridgeRoutes    = safeRequire('backend/routes/bridge');
+  const feesRoutes      = safeRequire('backend/routes/fees');
+  const rewardsRoutes   = safeRequire('backend/routes/rewards');
+  const profileRoutes   = safeRequire('backend/routes/profile'); // this one may do its own auth
+  const solanaRoutes    = safeRequire('backend/routes/solana');
+  const quotesRoutes    = safeRequire('backend/routes/quotes');
+  const pricesRoutes    = safeRequire('backend/routes/prices');
+  const taxRoutes       = safeRequire('backend/routes/tax');
+  const stakingRoutes   = safeRequire('routes/staking'); // project-local examples
+  const nftsRoutes      = safeRequire('routes/nfts');
 
+  // Some public (no auth) info routes
+  if (quotesRoutes) app.use('/api/quotes', quotesRoutes);
+  if (pricesRoutes) app.use('/api/prices', pricesRoutes);
 
-  // Project local
-  app.use('/api/staking',         stakingRoutes);
-  app.use('/api/nfts',            auth, nftsRoutes);
+  useIf('/api/wallets',      walletsRoutes);
+  useIf('/api/transfers',    transfersRoutes);
+  useIf('/api/liquidity',    liquidityRoutes);
+  useIf('/api/transactions', txRoutes);
+  useIf('/api/rates',        ratesRoutes);
+  useIf('/api/token',        tokenRoutes);
+  useIf('/api/mining',       miningRoutes);
+  useIf('/api/explorer',     explorerRoutes);
+  useIf('/api/bridge',       bridgeRoutes);
+  useIf('/api/fees',         feesRoutes);
+  useIf('/api/rewards',      rewardsRoutes);
+  if (profileRoutes) app.use('/api/profile', profileRoutes); // router enforces its own auth
+  useIf('/api/solana',       solanaRoutes);
+  useIf('/api/tax',          taxRoutes);
+  if (stakingRoutes) app.use('/api/staking', stakingRoutes);
+  if (nftsRoutes)    app.use('/api/nfts',    nftsRoutes);
 
-  // Favicon
-  app.get('/favicon.ico', (req, res) => res.status(204).end());
-
-  // Chain endpoints
+  // ----- misc -----
   app.get('/api/chain', (req, res) => res.json(blockchain.chain));
   app.post('/api/mine', auth, (req, res) => {
-    miner.mineTransactions();
+    try { miner.mineTransactions(); } catch {}
     res.json({ ok: true, height: blockchain.chain.length, time: Date.now() });
   });
-  
-
-  // Optional: expose blocks for history
   app.get('/api/blocks', (req, res) => res.json(blockchain.chain));
-
-  // Landing page
-  app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'capsule.html'));
-  });
-
-  // Health & debug
   app.get('/api/health', (req, res) => res.json({ ok: true, time: Date.now() }));
   app.get('/api/debug/routes', (req, res) => {
     const stack = app._router?.stack || [];
@@ -189,8 +188,13 @@ mongoose.connect(MONGO_URI)
     res.json(routes);
   });
 
+  // SPA roots
+  app.get('/',        (req, res) => res.sendFile(path.join(__dirname, 'public', 'capsule.html')));
+  app.get('/paper.html', (req, res) => res.sendFile(path.join(__dirname, 'public', 'paper.html')));
+
   app.listen(PORT, () => console.log(`🚀 Server listening on ${PORT}`));
 })();
 
-process.on('SIGINT',  async () => { await shutdown(); process.exit(0); });
-process.on('SIGTERM', async () => { await shutdown(); process.exit(0); });
+// graceful shutdown
+process.on('SIGINT',  async () => { try { await shutdown(); } catch {} process.exit(0); });
+process.on('SIGTERM', async () => { try { await shutdown(); } catch {} process.exit(0); });

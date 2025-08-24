@@ -17,3 +17,6 @@ cryptochain/client/dist/
 *.map
 cryptochain/client/dist/
 data/chainDB/
+
+# runtime data
+/data/chainDB/
