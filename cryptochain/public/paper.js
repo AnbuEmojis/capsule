@@ -38,7 +38,7 @@
     }
   
     // -------- tiny toast --------
-    function toast(msg, kind='info', ms=2600){
+    function toast(msg, kind='info', ms=2200){
       const n = document.createElement('div');
       n.className = `toast-lite ${kind}`;
       n.textContent = msg;
@@ -50,127 +50,57 @@
       setTimeout(()=>n.remove(), ms);
     }
   
-    // ===== Google Drive backup (client-owned) =====
-    async function backupToGoogleDrive({ address, encPrivKeyBlob }) {
-      const token = await new Promise((resolve, reject) => {
-        google.accounts.oauth2
-          .initTokenClient({
-            client_id: window.GOOGLE_CLIENT_ID,
-            scope: 'https://www.googleapis.com/auth/drive.file',
-            callback: (r) => r && r.access_token ? resolve(r.access_token) : reject('no token')
-          })
-          .requestAccessToken();
-      });
-  
-      const fileName = `cap-wallet-backup-${address.slice(0,10)}.capwallet.json`;
-      const meta = { name: fileName, mimeType: 'application/json' };
-      const boundary = '-------314159265358979323846';
-      const body =
-        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`+
-        `${JSON.stringify(meta)}\r\n`+
-        `--${boundary}\r\nContent-Type: application/json\r\n\r\n`+
-        `${JSON.stringify(encPrivKeyBlob)}\r\n`+
-        `--${boundary}--`;
-  
-      const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
-        body
-      });
-      if (!res.ok) throw new Error('drive_upload_failed');
-      alert(`✅ Backup saved to your Google Drive as ${fileName}`);
-      return res.json();
-    }
-  
-    document.getElementById('backupDriveBtn')?.addEventListener('click', async () => {
-      try {
-        const address = window.currentCapAddress;
-        if (!address) return alert('Set your CAP address first.');
-        const pass = await promptForPassphrase();
-        const encPrivKeyBlob = await encryptPrivKey({ privateKey: window.currentPrivateKey, passphrase: pass });
-        await backupToGoogleDrive({ address, encPrivKeyBlob });
-      } catch (e) {
-        console.error(e); alert('Backup failed.');
-      }
-    });
-  
-    // Lightweight wordlist (replace with full BIP39 if you like)
-    const WORDS = ["alley","arrow","basket","cabin","dawn","ember","field","globe","harbor","ivory","jungle","kilo","lemon","meadow","nectar","oasis","piano","quartz","river","saddle","timber","ultra","vapor","willow","xenon","yellow","zephyr"];
-    function genPassphrase(n=12){ return Array.from({length:n},()=>WORDS[(Math.random()*WORDS.length)|0]).join(' '); }
-  
-    let cachedPassphrase = null;
-    document.getElementById('genPassBtn')?.addEventListener('click', ()=>{
-      cachedPassphrase = genPassphrase();
-      document.getElementById('passOut').textContent = '••••••••••••••••';
-    });
-    document.getElementById('revealPassBtn')?.addEventListener('click', ()=>{
-      if (!cachedPassphrase) return;
-      const el = document.getElementById('passOut');
-      el.textContent = (el.textContent.startsWith('•')) ? cachedPassphrase : '••••••••••••••••';
-    });
-  
-    // Example encrypt helper using your existing scrypt/AES
-    async function encryptPrivKey({ privateKey, passphrase }) { return { scheme:'passphrase', ciphertext: btoa(privateKey), salt: 'demo', iv:'demo', tag:'demo' }; }
-    async function promptForPassphrase(){ if (cachedPassphrase) return cachedPassphrase; const p = prompt('Enter passphrase to encrypt your backup:'); if (!p) throw new Error('passphrase_required'); return p; }
-  
-    document.getElementById('saveCurrencyBtn')?.addEventListener('click', async ()=>{
-      const currency = document.getElementById('currencySelect').value;
-      await fetch('/api/user/prefs/currency', { method:'POST', headers:{'Content-Type': 'application/json'}, body: JSON.stringify({ currency }) });
-      alert('✅ Currency saved');
-    });
-  
     /* =========================================================
-       FIAT / STRIPE (dev override + buttons)
+       FIAT / STRIPE  (single-server; no :3001 override)
        ========================================================= */
-    // If you run the dev fiat server on :3001, define this in paper.html:
-    // <script>window.FIAT_BASE='http://localhost:3001'</script>
-    const FIAT_BASE = (typeof window !== 'undefined' && window.FIAT_BASE) ? window.FIAT_BASE : '';
-  
     async function fiatInit(){
-      const r = await fetch(`${FIAT_BASE}/api/fiat/init`, { method:'POST' });
-      const j = await r.json().catch(()=>null);
-      if (!r.ok) { alert('Fiat setup failed: ' + (j?.error || r.status)); return; }
-      if (j?.userId) { window.USER_ID = j.userId; localStorage.setItem('USER_ID', j.userId); }
-      await fiatRefresh();
-      alert('✅ Fiat wallet ready');
+      try{
+        const r = await fetch(`/api/fiat/init`, { method:'POST' });
+        if (!r.ok) throw new Error('init failed');
+        const j = await r.json().catch(()=>null);
+        if (j?.userId) { window.USER_ID = j.userId; localStorage.setItem('USER_ID', j.userId); }
+        await fiatRefresh();
+        toast('Fiat wallet ready','success');
+      } catch { toast('Fiat setup failed','warning'); }
     }
-  
     async function fiatRefresh(){
-      const r = await fetch(`${FIAT_BASE}/api/fiat/balance`);
-      if (!r.ok) return;
-      const j = await r.json().catch(()=>({}));
-      const cur = (j.currency ? String(j.currency).toUpperCase() : 'USD');
-      const cents = Number.isFinite(j.balanceCents) ? j.balanceCents : 0;
-      const el = document.getElementById('fiatBalance');
-      if (el) el.textContent = `${(cents/100).toFixed(2)} ${cur}`;
-      // also reflect pouch → Hub NATIVE
-      updateNativeFromFiat(j.balanceCents || 0);
+      try{
+        const r = await fetch(`/api/fiat/balance`);
+        if (!r.ok) return;
+        const j = await r.json().catch(()=>({}));
+        const cur = (j.currency ? String(j.currency).toUpperCase() : 'USD');
+        const cents = Number.isFinite(j.balanceCents) ? j.balanceCents : 0;
+        const el = document.getElementById('fiatBalance');
+        if (el) el.textContent = `${(cents/100).toFixed(2)} ${cur}`;
+        // mirror pouch → Hub NATIVE
+        updateNativeFromFiat(j.balanceCents || 0);
+      } catch {}
     }
-  
     async function fiatDeposit(){
       const amount = prompt('Deposit amount (USD):','10.00'); if (!amount) return;
-      const r = await fetch(`${FIAT_BASE}/api/fiat/deposit-checkout`, {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ amountCents: Math.round(parseFloat(amount)*100), currency:'usd' })
-      });
-      const j = await r.json().catch(()=>null);
-      if (!r.ok || !j?.url) { alert('Could not start Stripe Checkout'); return; }
-      location.assign(j.url);
+      try{
+        const r = await fetch(`/api/fiat/deposit-checkout`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ amountCents: Math.round(parseFloat(amount)*100), currency:'usd' })
+        });
+        const j = await r.json().catch(()=>null);
+        if (!r.ok || !j?.url) return toast('Could not start Stripe Checkout','warning');
+        location.assign(j.url);
+      } catch { toast('Could not start Stripe Checkout','warning'); }
     }
-  
     async function fiatWithdraw(){
       const amount = prompt('Withdraw amount (USD):','5.00'); if (!amount) return;
-      const r = await fetch(`${FIAT_BASE}/api/fiat/withdraw`, {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ amountCents: Math.round(parseFloat(amount)*100) })
-      });
-      if (!r.ok) { alert('Withdraw failed'); return; }
-      fiatRefresh();
+      try{
+        const r = await fetch(`/api/fiat/withdraw`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ amountCents: Math.round(parseFloat(amount)*100) })
+        });
+        if (!r.ok) throw 0;
+        fiatRefresh();
+      } catch { toast('Withdraw failed','warning'); }
     }
-  
-    // Wire Settings buttons
     document.getElementById('fiatSetupBtn')?.addEventListener('click', fiatInit);
     document.getElementById('fiatDepositBtn')?.addEventListener('click', fiatDeposit);
     document.getElementById('fiatWithdrawBtn')?.addEventListener('click', fiatWithdraw);
@@ -215,7 +145,7 @@
       return localQuote({ mode, amount });
     }
   
-    // Pull wallet info; prefer fiat pouch for NATIVE if provided by server
+    // Pull wallet info; prefer fiat pouch for NATIVE if server provides it
     async function getCapBalance(capAddr){
       if (!capAddr) return { capTokens:0, native:0 };
       const tryJSON = async url => { const r = await fetch(url,{headers:authHeaders()}); if (!r.ok) throw 0; return r.json(); };
@@ -233,23 +163,6 @@
       try { return await tryJSON(`/api/bridge/solana/balances?pubkey=${encodeURIComponent(solPubkey)}`); } catch {}
       try { return await tryJSON(`/api/solana/balances?pubkey=${encodeURIComponent(solPubkey)}`); } catch {}
       return { sol:0, wcap:0 };
-    }
-  
-    function renderPortfolioRows(items){
-      const body = $('#pf-list'); body.innerHTML = '';
-      const fmt = n => Number(n).toLocaleString(undefined,{maximumFractionDigits:6});
-      items.forEach(it=>{
-        const row = document.createElement('div');
-        row.className = 'table-r';
-        row.innerHTML = `
-          <div class="d-flex align-items-center gap-2">
-            <span class="badge ${it.symbol==='CAP'?'text-bg-dark':(it.symbol==='SOL'?'text-bg-info':'text-bg-secondary')}">${it.symbol}</span>
-            <span>${it.name}</span>
-          </div>
-          <div class="ta-r">${fmt(it.balance)}</div>
-          <div class="ta-r">${fmt(it.valueUsd)}</div>`;
-        body.appendChild(row);
-      });
     }
   
     async function refreshPortfolio(){
@@ -366,6 +279,12 @@
       $('#swap-quote-info').textContent = `CAP → SOL ≈ ${q.amountOut} (route: ${q.route?.join(' → ') || 'CAP → NATIVE → SOL'})`;
     });
   
+    // When Stripe confirm completes (server redirects back), refresh balances
+    window.addEventListener('fiat:confirmed', () => {
+      try { window.fiatRefresh && window.fiatRefresh(); } catch(e) {}
+      try { refreshPortfolio(); } catch(e) {}
+    });
+  
     // ===== Connect tab wiring =====
     async function refreshProfileCache(){
       const t = getToken(); if (!t) return null;
@@ -401,21 +320,31 @@
       $('#btn-save-sol')?.addEventListener('click', ()=>{ const v=$('#sol-addr-input').value.trim(); if (!v) return toast('Paste Solana pubkey','warning'); state.addrs.sol=v; localStorage.setItem('sol_addr',v); toast('SOL address saved','success'); });
     }
   
-    // ===== Map fiat balance into the Hub's NATIVE readout =====
+    // ===== Map fiat balance into the Hub’s NATIVE readout =====
     async function updateNativeFromFiat(fiatCentsMaybe){
       try {
         const cents = (typeof fiatCentsMaybe === 'number') ? fiatCentsMaybe
-                     : (await fetch(`${FIAT_BASE}/api/fiat/balance`).then(r=>r.json()).catch(()=>({balanceCents:0}))).balanceCents || 0;
+                     : (await fetch(`/api/fiat/balance`).then(r=>r.json()).catch(()=>({balanceCents:0}))).balanceCents || 0;
         const native = cents / 100;
         const el = document.querySelector('[data-native-balance]');
         if (el) el.textContent = native.toLocaleString(undefined, {maximumFractionDigits: 6});
+        // footer tag for visibility
+        let tag = document.getElementById('native-fiat-mirror');
+        if (!tag) {
+          const holder = document.querySelector('.balances') || document.body;
+          tag = document.createElement('div');
+          tag.id = 'native-fiat-mirror';
+          tag.style.cssText = 'margin:6px 0 0 4px;font-size:12px;opacity:.85';
+          holder.appendChild(tag);
+        }
+        tag.textContent = `NATIVE (fiat): ${native.toFixed(2)} USD`;
       } catch {}
     }
-    window.addEventListener('load', updateNativeFromFiat);
-    window.addEventListener('cap:swapped', updateNativeFromFiat);
-    document.querySelectorAll('[data-action="refresh-balances"]').forEach(b =>
-      b.addEventListener('click', updateNativeFromFiat)
-    );
+    window.addEventListener('load',            () => updateNativeFromFiat().catch(()=>{}));
+    window.addEventListener('cap:swapped',     () => updateNativeFromFiat().catch(()=>{}));
+    window.addEventListener('fiat:credited',   () => updateNativeFromFiat().catch(()=>{}));
+    document.querySelectorAll('[data-action="refresh-balances"]')
+      .forEach(b => b.addEventListener('click', () => updateNativeFromFiat().catch(()=>{})));
   
     // ===== First-load wiring =====
     (async function init(){
@@ -426,168 +355,69 @@
   
       useSavedAddresses();
       refreshPortfolio().catch(()=>{});
-      // initial fiat read for Hub
       updateNativeFromFiat().catch(()=>{});
     })();
   
     // expose fiat helpers for Settings tab
-    window.fiatInit = fiatInit;
-    window.fiatDeposit = fiatDeposit;
+    window.fiatInit     = fiatInit;
+    window.fiatDeposit  = fiatDeposit;
     window.fiatWithdraw = fiatWithdraw;
-    window.fiatRefresh = fiatRefresh;
+    window.fiatRefresh  = fiatRefresh;
   })();
-
   
-  
-(function () {
-  // ---------- tiny API wrapper (respects dev-shim) ----------
-  async function api(path, opts = {}) {
-    const res = await fetch(path, {
-      method: opts.method || 'GET',
-      headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-      credentials: 'include',
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      const err = new Error(`HTTP ${res.status}`);
-      err.status = res.status;
-      err.body = text;
-      throw err;
+  // ==== Rewards front-end glue (small, additive) ================================
+  (function(){
+    const H = { 'Content-Type': 'application/json' };
+    if (!H['x-user-id'] && (window.DEV_FAKE_AUTH === '1' || true)) {
+      H['x-user-id'] = 'dev:local';
     }
-    return res.json().catch(() => ({}));
-  }
-
-  // ---------- FIAT helpers ----------
-  async function fiatInit() {
-    try {
-      return await api('/api/fiat/init', { method: 'POST' });
-    } catch {
-      return { ok: false };
+    async function rwApi(path, opts) {
+      const res = await fetch(`/api/rewards${path}`, Object.assign({ headers: H }, opts || {}));
+      if (!res.ok) throw new Error(`rewards ${path} ${res.status}`);
+      return res.json();
     }
-  }
-
-  async function fiatBalance() {
-    try {
-      return await api('/api/fiat/balance');
-    } catch {
-      return { balanceCents: 0, currency: 'USD' };
-    }
-  }
-
-  async function fiatDeposit(amountCents, currency = 'usd') {
-    const { url } = await api('/api/fiat/deposit-checkout', {
-      method: 'POST',
-      body: { amountCents, currency },
-    });
-    if (url) location.href = url;
-  }
-
-  async function fiatWithdraw(amountCents) {
-    return api('/api/fiat/withdraw', {
-      method: 'POST',
-      body: { amountCents },
-    });
-  }
-
-  // ---------- Wire into your existing buttons ----------
-  const q = (s) => document.querySelector(s);
-  const byId = (id) => document.getElementById(id);
-
-  // If you already have handlers defined, you can keep them; these are safe defaults.
-  window.fiatInit = async () => {
-    const r = await fiatInit();
-    await refreshAll();
-    return r;
-  };
-
-  window.fiatDeposit = async () => {
-    const amt = Number(prompt('Amount (USD) to add to fiat wallet?')) || 0;
-    if (amt <= 0) return;
-    await fiatDeposit(Math.round(amt * 100), 'usd');
-  };
-
-  window.fiatWithdraw = async () => {
-    const amt = Number(prompt('Withdraw amount (USD) from fiat wallet?')) || 0;
-    if (amt <= 0) return;
-    try {
-      await fiatWithdraw(Math.round(amt * 100));
-      await refreshAll();
-      toast('Withdrawn from fiat wallet.');
-    } catch (e) {
-      toast('Withdraw failed.');
-    }
-  };
-
-  // ---------- Refresh helpers ----------
-  async function refreshFiatBadgeIntoNative() {
-    // Pull fiat balance and reflect it in the Native section label.
-    const r = await fiatBalance();
-    const usd = (r.balanceCents || 0) / 100;
-    // Find a place near your NATIVE readout; these selectors are conservative.
-    const nativeBox = document.querySelector('.balances') || document.body;
-    let tag = document.getElementById('native-fiat-mirror');
-    if (!tag) {
-      tag = document.createElement('div');
-      tag.id = 'native-fiat-mirror';
-      tag.style.cssText = 'margin-top:4px;font-size:12px;opacity:.8';
-      nativeBox.appendChild(tag);
-    }
-    tag.textContent = `NATIVE (fiat): ${usd.toFixed(2)} USD`;
-  }
-
-  async function refreshOnchain() {
-    // If you have an existing function to refresh CAP/wCAP/SOL balances, call it here.
-    // Example:
-    if (typeof window.refreshBalances === 'function') {
-      await window.refreshBalances();
-    }
-  }
-
-  async function refreshAll() {
-    await Promise.all([refreshFiatBadgeIntoNative(), refreshOnchain()]);
-  }
-
-  // ---------- Swap flow glue (after successful buy/sell, resync everything) ----------
-  async function onSwapSuccess() {
-    await refreshAll();
-    toast('Swap complete.');
-  }
-
-  // Wrap your existing Execute Buy button if present
-  (function patchExecuteBuy() {
-    const btn = Array.from(document.querySelectorAll('button')).find(
-      (b) => /Execute Buy/i.test(b.textContent || '')
-    );
-    if (!btn) return;
-    const original = btn.onclick;
-    btn.onclick = async (e) => {
+    async function rwRefresh() {
       try {
-        if (original) {
-          const maybePromise = original.call(btn, e);
-          if (maybePromise && typeof maybePromise.then === 'function') {
-            await maybePromise;
-          }
-        }
-        await onSwapSuccess();
-      } catch (err) {
-        // original handler already surfaced any errors
+        const s = await rwApi('/state');
+        const pt = document.getElementById('rwPoints');
+        const st = document.getElementById('rwStreak');
+        if (pt) pt.textContent = s.points ?? 0;
+        if (st) st.textContent = s.streak ?? 0;
+      } catch {}
+    }
+    async function rwCheckin() {
+      try {
+        await rwApi('/checkin', { method:'POST' });
+        toast('Checked in! +10 points', 'success');
+      } catch (e) {
+        // 409 means you’ve already checked in today — treat as info
+        toast('Already checked in today', 'info');
+      } finally {
+        rwRefresh();
       }
-    };
+    }
+    
+    async function rwClaim() {
+      try {
+        await rwApi('/claim', { method:'POST' });
+        toast('Bonus claimed! +100 points', 'success');
+      } catch (e) {
+        toast('Could not claim right now', 'warning');
+      } finally {
+        rwRefresh();
+      }
+    }
+    
+  
+    window.rwRefresh = rwRefresh; window.rwCheckin = rwCheckin; window.rwClaim = rwClaim;
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('rwCheckinBtn')?.addEventListener('click', rwCheckin);
+      document.getElementById('rwClaimBtn')?.addEventListener('click', rwClaim);
+      rwRefresh();
+    });
+    document.addEventListener('click', (e) => {
+      const t = e.target;
+      if (t && t.matches('[data-tab="#tab-rewards"], #rewards-tab')) setTimeout(rwRefresh, 0);
+    });
   })();
-
-  // tiny toast
-  function toast(msg) {
-    try {
-      const el = document.createElement('div');
-      el.textContent = msg;
-      el.style.cssText =
-        'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#0a0f1a;color:#bff; border:1px solid #134; padding:8px 12px;border-radius:10px;z-index:9999';
-      document.body.appendChild(el);
-      setTimeout(() => el.remove(), 1800);
-    } catch {}
-  }
-
-  // Initial pass after DOM ready
-  document.addEventListener('DOMContentLoaded', refreshAll);
-})();
+  

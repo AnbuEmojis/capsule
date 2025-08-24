@@ -1,526 +1,237 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="utf-8"/>
   <title>CAP Paper Wallet</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"/>
+  <!-- Try CDN; if it fails (CSP/offline), fall back to /vendor -->
+<link rel="stylesheet"
+href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN"
+crossorigin="anonymous"
+onerror="this.remove();(function(){var l=document.createElement('link');l.rel='stylesheet';l.href='/vendor/bootstrap.min.css';document.head.appendChild(l)})()">
 
-  <!-- (optional) Bootstrap for basic layout/buttons -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-
-  <!-- Your custom styles -->
-  <link rel="stylesheet" href="/styles.css" />
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
-
-  <!-- QR Code (one copy only) -->
-  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
-</head>
 <script>
-  (function(){
-    const API = 'http://localhost:3001';
-    const url = new URL(location.href);
-    const sid = url.searchParams.get('session_id');
-  
-    if (sid && !sessionStorage.getItem('fiat-confirmed:'+sid)) {
-      fetch(`${API}/api/fiat/confirm?session_id=${encodeURIComponent(sid)}`)
-        .finally(() => {
-          sessionStorage.setItem('fiat-confirmed:'+sid, '1');
-          url.searchParams.delete('session_id');
-          url.searchParams.delete('fiat');
-          history.replaceState({}, '', url);
-          setTimeout(()=> window.fiatRefresh && window.fiatRefresh(), 0);
-        });
-    }
-  })();
-  </script>
-<style>
-  :root{
-    --brand:#00e0ff; --brand2:#6c5ce7; --bg:#0b1220; --ink:#e6f1ff; --muted:#9fb2c8; --ring:rgba(0,224,255,.35);
-  }
-  button{ background:linear-gradient(180deg,rgba(0,224,255,.18),rgba(0,224,255,.10)); border:1px solid var(--ring); color:var(--ink); border-radius:12px; padding:10px 14px; }
-  button:hover{ box-shadow:0 0 0 4px var(--ring); }
-  .mono{ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
-  .tab-panel[hidden]{ display:none!important; }
+(function(){
+var s=document.createElement('script');
+s.src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js';
+s.crossOrigin='anonymous';
+s.onerror=function(){
+var f=document.createElement('script');
+f.src='/vendor/bootstrap.bundle.min.js';
+document.head.appendChild(f);
+};
+document.head.appendChild(s);
+})();
+</script>
+
+  <style>
+    body { background:#0f172a; color:#e2e8f0; }
+    .nav-pills .nav-link.active { background:#111827; }
+    .card { background:#0b1220; border:1px solid #1f2937; }
+    .table-h, .table-r { display:grid; grid-template-columns: 180px 1fr 1fr; gap:12px; padding:8px 12px; }
+    .table-h { color:#94a3b8; font-size:14px; }
+    .table-r { border-top:1px dashed #1f2937; }
+    .ta-r { text-align:right; }
+    .balances small { color:#a3aebf; }
+    .badge.bg-success { background:#15803d !important; }
   </style>
-  
-<body class="container py-3">
+</head>
+<body class="p-3 p-md-4">
+  <div class="container">
+    <ul class="nav nav-pills mb-3" id="tabs">
+      <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-connect">Connect</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-paper">Paper Wallet</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-hub">Hub</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-settings">Settings</button></li>
+      <li class="nav-item"><button class="nav-link" id="rewards-tab" data-bs-toggle="tab" data-bs-target="#tab-rewards">Rewards</button></li>
+    </ul>
 
-  <header class="mb-3 d-flex align-items-center gap-2">
-    <img src="./pictures/ctl.png" alt="Logo" height="36" onerror="this.style.display='none'">
-    <h1 class="h4 m-0">CAP Paper Wallet</h1>
-    <span class="badge bg-secondary ms-2" id="conn-status">offline</span>
-    <span class="ms-auto small text-muted" id="session-email">Logged in as (session)</span>
-  </header>
+    <div class="tab-content">
 
-  <!-- Tabs -->
-  <ul class="nav nav-tabs" id="walletTabs" role="tablist">
-    <li class="nav-item" role="presentation">
-      <button class="nav-link active" id="connect-tab" data-bs-toggle="tab" data-bs-target="#connect" type="button" role="tab">Connect</button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings" type="button" role="tab">Settings</button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="hub-tab" data-bs-toggle="tab" data-bs-target="#hub" type="button" role="tab">Hub</button>
-    </li>
-  </ul>
-
-  <div class="tab-content pt-3">
-
-    <!-- CONNECT -->
-    <div class="tab-pane fade show active" id="connect" role="tabpanel" aria-labelledby="connect-tab">
-      <div class="card mb-3">
-        <div class="card-body">
-          <div class="d-flex align-items-center gap-2 flex-wrap">
-            <button id="btn-google" class="btn btn-light">🔗 Sign in with Google</button>
-            <button id="btn-github" class="btn btn-light">🔗 Sign in with GitHub</button>
-            <div class="vr d-none d-md-block"></div>
-            <input id="login-email" class="form-control" placeholder="email@example.com" style="max-width:260px;">
-            <input id="login-pass" class="form-control" placeholder="password" type="password" style="max-width:180px;">
-            <button id="btn-email-login" class="btn btn-primary">Email login</button>
-            <button id="btn-email-create" class="btn btn-outline-primary">Create account</button>
-            <button id="btn-signout" class="btn btn-outline-secondary ms-auto">Sign out</button>
-            <button id="btn-copy-token" class="btn btn-outline-secondary">Copy token</button>
-          </div>
-          <div id="conn-toast" class="toast position-relative mt-3" hidden></div>
-        </div>
-      </div>
-
-      <div class="row g-3">
-        <!-- Save CAP -->
-        <div class="col-md-6">
-          <div class="card h-100">
-            <div class="card-body">
-              <div class="card-title h6"><span class="badge text-bg-dark me-2">CAP</span>Save CAP address to account</div>
-              <div class="d-flex gap-2">
-                <input id="cap-addr-input" class="form-control" placeholder="04… (uncompressed hex 130 chars)">
-                <button id="btn-save-cap" class="btn btn-success">Save</button>
+      <!-- Connect -->
+      <div class="tab-pane fade show active" id="tab-connect">
+        <div class="card p-3">
+          <div class="d-flex align-items-center justify-content-between">
+            <div>
+              <div id="session-email">Not signed in</div>
+              <div class="mt-1">
+                <span id="conn-status" class="badge bg-secondary">offline</span>
               </div>
-              <div class="small text-muted mt-2">Tip: after generating/importing, paste your CAP public key and save it to your account.</div>
-              <div class="mt-2 small">Saved: <span id="cap-addr-saved" class="font-monospace text-secondary">—</span></div>
+            </div>
+            <div class="d-flex gap-2">
+              <button id="btn-google" class="btn btn-light btn-sm">Google</button>
+              <button id="btn-github" class="btn btn-light btn-sm">GitHub</button>
+              <button id="btn-copy-token" class="btn btn-outline-light btn-sm">Copy token</button>
+              <button id="btn-signout" class="btn btn-outline-danger btn-sm">Sign out</button>
             </div>
           </div>
-        </div>
-
-        <!-- Save SOL -->
-        <div class="col-md-6">
-          <div class="card h-100">
-            <div class="card-body">
-              <div class="card-title h6"><span class="badge text-bg-info me-2">SOL</span>Save Solana (devnet) address to account</div>
-              <div class="d-flex gap-2">
-                <input id="sol-addr-input" class="form-control" placeholder="Phantom public key (base58)">
-                <button id="btn-save-sol" class="btn btn-success">Save</button>
-              </div>
-              <div class="small text-muted mt-2">Paste your devnet address, then save it to your account.</div>
-              <div class="mt-2 small">Saved: <span id="sol-addr-saved" class="font-monospace text-secondary">—</span></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div><!-- /CONNECT -->
-
-    <!-- SETTINGS -->
-
-    <!-- Settings → Security -->
-    
-    <div class="tab-pane fade" id="settings" role="tabpanel" aria-labelledby="settings-tab">
-      <!-- Display & Region (optional; keep minimal here) -->
-      <div class="row">
-        <button onclick="capGenPass()">Generate passphrase</button>
-        <button onclick="capRevealPass()">Reveal</button>
-        <span id="passOut" class="mono"></span>
-        <button style="margin-left:auto" onclick="capBackupToDrive({ address: window.currentCapAddress, privateKey: window.currentPrivateKey })">Back up to Google Drive</button>
-      </div>
-      <div class="card mb-3">
-        <div class="card-body">
-          <div class="card-title h6">Display & Region</div>
-          <div class="row g-2 align-items-center">
-            <div class="col-sm-4 col-6">Currency:</div>
-            <select data-cap-currency>
-              <option>USD</option><option>EUR</option><option>GBP</option>
-            </select>
-            <button onclick="saveCurrency()">Save currency</button>            
-            <div class="col-sm-4 col-6">
-              <select id="currency-select" class="form-select">
-                <option value="USD">USD</option>
-                <option value="CAD">CAD</option>
-                <option value="EUR">EUR</option>
-                <option value="GBP">GBP</option>
-                <option value="AUD">AUD</option>
-                <option value="JPY">JPY</option>
-              </select>
-            </div>
-            <div class="col-sm-4 mt-2 mt-sm-0">
-              <button id="btn-save-currency" class="btn btn-outline-secondary">Save currency</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="row">
-        <button id="fiatSetupBtn" onclick="fiatInit()">Setup fiat wallet</button>
-        <button id="fiatDepositBtn" onclick="fiatDeposit()">Add funds (Stripe)</button>
-        <button id="fiatWithdrawBtn" onclick="fiatWithdraw()">Withdraw (simulate)</button>
-        <span id="fiatBalance" class="mono">—</span>
-      </div>
-
-      <!-- SETTINGS: Security & Backup -->
-<div class="card mb-4">
-  <div class="card-header d-flex align-items-center">
-    <strong>Security & Backup</strong>
-    <span class="badge bg-secondary ms-2">local-first</span>
-    <button id="backupDriveBtn">Back up to Google Drive</button>
-  </div>
-
-  <div class="card-body">
-    <p class="text-muted mb-3">
-      Your CAP private key never leaves the browser unencrypted. Use a passphrase to encrypt it, then download a backup file, or save it to your account (if enabled).
-    </p>
-
-    <div class="row g-3 align-items-center">
-      <div class="col-sm-4">
-        <label for="sec-pass" class="form-label">Passphrase</label>
-        <input id="sec-pass" type="password" class="form-control" placeholder="Choose a strong passphrase">
-      </div>
-      <div class="col-sm-4">
-        <label for="sec-pass2" class="form-label">Confirm</label>
-        <input id="sec-pass2" type="password" class="form-control" placeholder="Repeat passphrase">
-      </div>
-      <div class="col-sm-4">
-        <label class="form-label">Actions</label>
-        <div class="d-flex flex-wrap gap-2">
-          <button id="sec-encrypt-download" class="btn btn-primary">Encrypt & download</button>
-          <label class="btn btn-outline-secondary mb-0">
-            Upload & decrypt <input id="sec-upload" type="file" accept="application/json" hidden>
-          </label>
-        </div>
-      </div>
-    </div>
-
-    <hr class="my-4">
-
-    <div class="d-flex flex-wrap gap-2">
-      <button id="sec-save-account" class="btn btn-outline-primary">Save to account</button>
-      <button id="sec-load-account" class="btn btn-outline-secondary">Load from account</button>
-      <span class="text-muted small ms-1" id="sec-status"></span>
-    </div>
-  </div>
-</div>
-
-
-      <!-- Linked Addresses -->
-      <div class="card" id="linked-addresses-card">
-        <div class="card-body">
-          <div class="card-title h6">Linked addresses</div>
-          <div class="small text-muted mb-2">Manage your CAP and SOL addresses tied to this account. Choose a default per chain.</div>
-          <div id="linked-addresses">
-            <div class="text-muted small">Loading…</div>
-          </div>
-        </div>
-      </div>
-    </div><!-- /SETTINGS -->
-
-    <!-- HUB -->
-    <div class="tab-pane fade" id="hub" role="tabpanel" aria-labelledby="hub-tab">
- <!-- ===== Portfolio (NEW) ===== -->
- <section id="portfolio" class="card card-lg">
-  <div class="card-head">
-    <div>
-      <h3 class="card-title">Portfolio</h3>
-      <div class="card-sub">Aggregated balances for your saved CAP & Solana addresses</div>
-    </div>
-<!-- Portfolio header actions -->
-<div class="d-flex align-items-center gap-2">
-  <button id="pf-use-saved" class="btn btn-xs btn-outline-secondary">Use saved addresses</button>
-  <button id="pf-refresh" class="btn btn-xs btn-outline-primary">Refresh</button>
-  <span id="pf-refreshing" class="badge text-bg-secondary" style="display:none">Refreshing…</span>
-</div>
-
-  </div>
-
-  <div class="totals">
-    <div class="total">
-      <div class="label">Total (USD)</div>
-      <div id="pf-total-usd" class="value big">—</div>
-    </div>
-    <div class="total">
-      <div class="label">Total (NATIVE)</div>
-      <div id="pf-total-native" class="value">—</div>
-    </div>
-  </div>
-
-  <div id="pf-rows" class="asset-list">
-    <!-- rows injected by JS -->
-  </div>
-
-  <div class="tip muted">
-    Tip: set your CAP and Solana addresses in Connect/Settings, then click <em>Use saved addresses</em> above.
-  </div>
-</section>
-
-
-<!-- ===== HUB ===== -->
-<section class="card mt-3">
-  <header class="d-flex align-items-center justify-content-between">
-    <div>
-      <strong>Hub</strong>
-      <span id="conn-status" class="badge bg-secondary ms-2">offline</span>
-    </div>
-    <small id="session-email" class="text-muted">Not signed in</small>
-  </header>
-  <section class="card mt-3">
-    <header><strong>Balances</strong></header>
-    <div class="row g-3 mt-1">
-      <div class="col-md-6">
-        <div class="p-3 rounded" style="background:#0f1b2a;border:1px solid #21324a;">
-          <div class="d-flex justify-content-between align-items-center">
-            <h6 class="m-0">CAP / NATIVE</h6>
-            <button id="bal-refresh-cap" class="btn btn-sm btn-outline-light">Refresh</button>
-          </div>
-          <div class="mt-2 small text-muted">CAP address</div>
-          <input id="bal-cap-addr" class="form-control form-control-sm" placeholder="CAP public address (04...)">
-          <div class="mt-2">
-            <div>CAP tokens: <strong id="bal-cap-cap">—</strong> <span class="text-muted">(≈ <span id="bal-cap-cap-native">—</span> NATIVE)</span></div>
-            <div>NATIVE: <strong id="bal-cap-native">—</strong></div>
-          </div>
-        </div>
-      </div>
-  
-      <div class="col-md-6">
-        <div class="p-3 rounded" style="background:#0f1b2a;border:1px solid #21324a;">
-          <div class="d-flex justify-content-between align-items-center">
-            <h6 class="m-0">SOL / wCAP (Devnet)</h6>
-            <button id="bal-refresh-sol" class="btn btn-sm btn-outline-light">Refresh</button>
-          </div>
-          <div class="mt-2 small text-muted">SOL address</div>
-          <input id="bal-sol-addr" class="form-control form-control-sm" placeholder="SOL pubkey (Phantom Devnet)">
-          <div class="mt-2">
-            <div>SOL: <strong id="bal-sol-sol">—</strong> <span class="text-muted">(≈ <span id="bal-sol-sol-native">—</span> NATIVE)</span></div>
-            <div>wCAP: <strong id="bal-sol-wcap">—</strong> <span class="text-muted">(≈ <span id="bal-sol-wcap-native">—</span> NATIVE)</span></div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-  
-  <!-- Action switcher -->
-  <div class="btn-group mt-3" role="group" aria-label="Actions">
-    <button id="act-buy"    class="btn btn-outline-primary active">Buy CAP</button>
-    <button id="act-sell"   class="btn btn-outline-primary">Sell CAP</button>
-    <button id="act-swap"   class="btn btn-outline-primary">Swap CAP ↔ SOL</button>
-    <button id="act-xfer"   class="btn btn-outline-primary">Transfer</button>
-    <button id="act-search" class="btn btn-outline-primary">Search</button>
-  </div>
-
-  <!-- Panels -->
-  <div class="mt-3">
-
-    <!-- BUY: NATIVE -> CAP -->
-    <div id="panel-buy" class="trade-panel">
-      <div class="row g-3">
-        <div class="col-md-5">
-          <label class="form-label">Spend (NATIVE)</label>
-          <input id="buy-native" type="number" min="0" step="0.000001" class="form-control" placeholder="e.g. 10.00">
-        </div>
-        <div class="col-md-5">
-          <label class="form-label">Receive (CAP)</label>
-          <input id="buy-cap-out" class="form-control" readonly>
-        </div>
-        <div class="col-md-2 d-flex align-items-end">
-          <button id="buy-quote" class="btn btn-primary w-100">Quote</button>
-        </div>
-      </div>
-      <div id="buy-quote-info" class="small text-muted mt-2"></div>
-      <div class="d-flex gap-2 mt-3">
-        <button id="buy-exec" class="btn btn-success">Execute Buy</button>
-        <button id="buy-fill-wallet" class="btn btn-outline-secondary">Use my CAP address</button>
-      </div>
-      <div class="mt-2">
-        <label class="form-label">To CAP address</label>
-        <input id="buy-dst-cap" class="form-control" placeholder="CAP public address (04...)">
-      </div>
-    </div>
-
-    <!-- SELL: CAP -> NATIVE -->
-    <div id="panel-sell" class="trade-panel d-none">
-      <div class="row g-3">
-        <div class="col-md-5">
-          <label class="form-label">Sell (CAP)</label>
-          <input id="sell-cap" type="number" min="0" step="0.000001" class="form-control" placeholder="e.g. 10.00">
-        </div>
-        <div class="col-md-5">
-          <label class="form-label">Receive (NATIVE)</label>
-          <input id="sell-native-out" class="form-control" readonly>
-        </div>
-        <div class="col-md-2 d-flex align-items-end">
-          <button id="sell-quote" class="btn btn-primary w-100">Quote</button>
-        </div>
-      </div>
-      <div id="sell-quote-info" class="small text-muted mt-2"></div>
-      <div class="d-flex gap-2 mt-3">
-        <button id="sell-exec" class="btn btn-success">Execute Sell</button>
-        <button id="sell-fill-wallet" class="btn btn-outline-secondary">Use my CAP address</button>
-      </div>
-      <div class="mt-2">
-        <label class="form-label">From CAP address</label>
-        <input id="sell-src-cap" class="form-control" placeholder="CAP public address (04...)">
-      </div>
-    </div>
-
-    <!-- SWAP: CAP -> SOL (devnet) -->
-    <div id="panel-swap" class="trade-panel d-none">
-      <div class="row g-3">
-        <div class="col-md-4">
-          <label class="form-label">Amount (CAP)</label>
-          <input id="swap-cap" type="number" min="0" step="0.000001" class="form-control" placeholder="e.g. 10.00">
-        </div>
-        <div class="col-md-4">
-          <label class="form-label">To SOL address (devnet)</label>
-          <input id="swap-dst-sol" class="form-control" placeholder="Paste SOL pubkey (e.g. Phantom)">
-        </div>
-        <div class="col-md-4 d-flex align-items-end">
-          <button id="swap-quote" class="btn btn-primary w-100">Quote</button>
-        </div>
-      </div>
-      <div id="swap-quote-info" class="small text-muted mt-2"></div>
-      <div class="d-flex gap-2 mt-3">
-        <button id="swap-exec" class="btn btn-success">Execute Swap</button>
-        <button id="swap-fill-cap" class="btn btn-outline-secondary">Use my CAP address</button>
-      </div>
-      <div class="mt-2">
-        <label class="form-label">From CAP address</label>
-        <input id="swap-src-cap" class="form-control" placeholder="CAP public address (04...)">
-      </div>
-    </div>
-
-    <!-- TRANSFER -->
-    <div id="panel-xfer" class="trade-panel d-none">
-      <ul class="nav nav-pills mb-3" id="pills-xfer" role="tablist">
-        <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#xfer-cap">Send CAP</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#xfer-sol">SOL (devnet helper)</button></li>
-      </ul>
-      <div class="tab-content">
-        <div id="xfer-cap" class="tab-pane fade show active">
-          <div class="row g-3">
-            <div class="col-md-4">
-              <label class="form-label">From CAP address</label>
-              <input id="xfer-cap-from" class="form-control" placeholder="CAP public address (04...)">
-              <button id="xfer-cap-fill" class="btn btn-link p-0 mt-1">Use my CAP address</button>
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">To CAP address</label>
-              <input id="xfer-cap-to" class="form-control" placeholder="Recipient CAP address">
-            </div>
-            <div class="col-md-2">
-              <label class="form-label">Amount (CAP)</label>
-              <input id="xfer-cap-amt" type="number" min="0" step="0.000001" class="form-control">
-            </div>
-            <div class="col-md-2">
-              <label class="form-label">Penny (miner)</label>
-              <input id="xfer-cap-fee" type="number" min="0" step="0.000001" class="form-control" value="0.02">
-            </div>
-          </div>
-          <div class="d-flex gap-2 mt-3">
-            <button id="xfer-cap-send" class="btn btn-warning">Send CAP</button>
-            <button id="xfer-cap-mine" class="btn btn-outline-secondary">⛏️ Mine</button>
-          </div>
-          <div id="xfer-cap-info" class="small text-muted mt-2"></div>
-        </div>
-
-        <div id="xfer-sol" class="tab-pane fade">
-          <div class="row g-3">
+          <hr/>
+          <div class="row g-2">
             <div class="col-md-6">
-              <label class="form-label">To SOL address (devnet)</label>
-              <input id="xfer-sol-to" class="form-control" placeholder="Recipient SOL pubkey">
+              <label class="form-label">CAP address (uncompressed 04…)</label>
+              <div class="input-group">
+                <input id="cap-addr-input" class="form-control" placeholder="04… (130 hex chars)"/>
+                <button id="btn-save-cap" class="btn btn-outline-light">Save</button>
+              </div>
             </div>
-            <div class="col-md-3">
-              <label class="form-label">Amount (SOL)</label>
-              <input id="xfer-sol-amt" type="number" min="0.1" step="0.1" class="form-control" value="0.25">
-            </div>
-            <div class="col-md-3 d-flex align-items-end">
-              <button id="xfer-sol-airdrop" class="btn btn-info w-100">Devnet Airdrop</button>
+            <div class="col-md-6">
+              <label class="form-label">Solana address (devnet)</label>
+              <div class="input-group">
+                <input id="sol-addr-input" class="form-control" placeholder="Solana pubkey"/>
+                <button id="btn-save-sol" class="btn btn-outline-light">Save</button>
+              </div>
             </div>
           </div>
-          <div id="xfer-sol-info" class="small text-muted mt-2"></div>
         </div>
       </div>
-    </div>
 
-    <!-- SEARCH -->
-    <div id="panel-search" class="trade-panel d-none">
-      <div class="row g-3">
-        <div class="col-md-4">
-          <label class="form-label">Amount (CAP or NATIVE)</label>
-          <input id="search-amt" type="number" min="0" step="0.000001" class="form-control" placeholder="e.g. 10">
+      <!-- Paper Wallet (balances overview) -->
+      <div class="tab-pane fade" id="tab-paper">
+        <div class="card p-3">
+          <div class="d-flex align-items-center justify-content-between">
+            <h5 class="m-0">Portfolio</h5>
+            <button class="btn btn-outline-light btn-sm" data-action="refresh-balances">Refresh</button>
+          </div>
+          <div class="balances mt-2">
+            <small>(NATIVE mirrors fiat pouch)</small>
+          </div>
+          <div id="pf-refreshing" class="mt-2" style="display:none">Refreshing…</div>
+
+          <div class="table-h mt-3">
+            <div>Asset</div><div class="ta-r">Balance</div><div class="ta-r">Value (USD)</div>
+          </div>
+          <div id="pf-list"></div>
+
+          <hr/>
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label">CAP address to read</label>
+              <input id="bal-cap-addr" class="form-control" placeholder="04…"/>
+              <div class="d-flex gap-3 mt-1">
+                <div>CAP: <span id="bal-cap-cap">0</span></div>
+                <div>NATIVE: <span id="bal-cap-native" data-native-balance>0</span></div>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Solana address to read</label>
+              <input id="bal-sol-addr" class="form-control" placeholder="Solana pubkey"/>
+              <div class="d-flex gap-3 mt-1">
+                <div>SOL: <span id="bal-sol-sol">0</span></div>
+                <div>wCAP: <span id="bal-sol-wcap">0</span></div>
+              </div>
+            </div>
+          </div>
+
+          <hr/>
+          <div class="d-flex justify-content-end gap-3">
+            <div>Total (USD): <strong id="pf-total-usd">0</strong></div>
+            <div>Total (NATIVE): <strong id="pf-total-native">0</strong></div>
+          </div>
         </div>
-        <div class="col-md-4">
-          <label class="form-label">Mode</label>
-          <select id="search-mode" class="form-select">
-            <option value="cap2native">CAP → NATIVE</option>
-            <option value="native2cap">NATIVE → CAP</option>
-            <option value="cap2sol">CAP → SOL</option>
+      </div>
+
+      <!-- Hub (buy/sell/swap) -->
+      <div class="tab-pane fade" id="tab-hub">
+        <div class="card p-3">
+          <h5>Buy CAP with NATIVE</h5>
+          <div class="row g-2">
+            <div class="col-md-4">
+              <label class="form-label">Spend NATIVE</label>
+              <input id="buy-native" class="form-control" placeholder="e.g. 100"/>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Destination CAP address</label>
+              <input id="buy-dst-cap" class="form-control" placeholder="04…"/>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Estimate CAP</label>
+              <input id="buy-cap-out" class="form-control" disabled/>
+            </div>
+          </div>
+          <div class="mt-2 d-flex gap-2">
+            <button id="buy-quote" class="btn btn-outline-light btn-sm">Get quote</button>
+            <button id="buy-exec"  class="btn btn-light btn-sm">Execute</button>
+            <span id="buy-quote-info" class="ms-2 small text-secondary"></span>
+          </div>
+
+          <hr/>
+          <h5>Sell CAP to NATIVE</h5>
+          <div class="row g-2">
+            <div class="col-md-4">
+              <label class="form-label">Sell CAP</label>
+              <input id="sell-cap" class="form-control" placeholder="e.g. 50"/>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Source CAP address</label>
+              <input id="sell-src-cap" class="form-control" placeholder="04…"/>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Estimate NATIVE</label>
+              <input id="sell-native-out" class="form-control" disabled/>
+            </div>
+          </div>
+          <div class="mt-2 d-flex gap-2">
+            <button id="sell-quote" class="btn btn-outline-light btn-sm">Get quote</button>
+            <button id="sell-exec"  class="btn btn-light btn-sm">Execute</button>
+            <span id="sell-quote-info" class="ms-2 small text-secondary"></span>
+          </div>
+
+          <hr/>
+          <h5>Swap CAP → SOL (bridged)</h5>
+          <div class="row g-2">
+            <div class="col-md-4">
+              <label class="form-label">CAP</label>
+              <input id="swap-cap" class="form-control" placeholder="e.g. 25"/>
+            </div>
+          </div>
+          <div class="mt-2 d-flex gap-2">
+            <button id="swap-quote" class="btn btn-outline-light btn-sm">Get quote</button>
+            <span id="swap-quote-info" class="ms-2 small text-secondary"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings (fiat pouch) -->
+      <div class="tab-pane fade" id="tab-settings">
+        <div class="card p-3">
+          <h5>Fiat wallet (Stripe)</h5>
+          <div class="d-flex align-items-center gap-3">
+            <button id="fiatSetupBtn"    class="btn btn-outline-light btn-sm">Setup fiat wallet</button>
+            <button id="fiatDepositBtn"  class="btn btn-light btn-sm">Add funds</button>
+            <button id="fiatWithdrawBtn" class="btn btn-outline-warning btn-sm">Withdraw</button>
+            <div>Balance: <strong id="fiatBalance">0.00 USD</strong></div>
+          </div>
+
+          <hr/>
+          <h6>Currency</h6>
+          <select class="form-select" disabled>
+            <option>USD</option>
           </select>
         </div>
-        <div class="col-md-4 d-flex align-items-end">
-          <button id="search-run" class="btn btn-primary w-100">Get Quote</button>
+      </div>
+
+      <!-- Rewards -->
+      <div class="tab-pane fade" id="tab-rewards">
+        <div class="card p-3">
+          <h5>Rewards</h5>
+          <div class="d-flex gap-4 align-items-center">
+            <div>Points: <strong id="rwPoints">0</strong></div>
+            <div>Streak: <strong id="rwStreak">0</strong></div>
+            <div id="rwMsg" class="text-info small"></div>
+          </div>
+          <div class="mt-3 d-flex gap-2">
+            <button id="rwCheckinBtn" class="btn btn-light btn-sm">Daily check-in (+10)</button>
+            <button id="rwClaimBtn"   class="btn btn-outline-light btn-sm">Claim bonus (+100)</button>
+          </div>
         </div>
       </div>
-      <pre id="search-out" class="mt-3 bg-dark text-light p-3 rounded" style="min-height:120px"></pre>
-    </div>
 
-  </div>
-</section>
-
-<!-- ===== PAPER PREVIEW (unchanged) ===== -->
-<section id="paper-preview" class="card mt-4 d-none">
-  <header><strong>Paper Wallet</strong></header>
-  <div class="paper-grid">
-    <div class="paper-col">
-      <h6>Public (CAP)</h6>
-      <canvas id="qr-cap-addr" width="180" height="180"></canvas>
-      <code id="txt-cap-addr" class="d-block mt-2 small"></code>
-    </div>
-    <div class="paper-col">
-      <h6>Private (hex)</h6>
-      <canvas id="qr-cap-priv" width="180" height="180"></canvas>
-      <code id="txt-cap-priv" class="d-block mt-2 small text-warning"></code>
     </div>
   </div>
-  <div class="paper-panel mt-3">
-    <div class="paper-panel-title">Recovery words</div>
-    <button id="reveal-words" class="btn btn-warning btn-sm">Reveal (hold)</button>
-    <div id="words-wrap" class="mt-2 d-none"><div id="txt-cap-words" class="paper-words"></div></div>
-  </div>
-  <div class="mt-3">
-    <button id="hub-print-paper" class="btn btn-outline-light" disabled>🖨️ Print</button>
-  </div>
-</section>
 
-
-<section id="tab-rewards" class="tab-panel" hidden>
-  <div class="card">
-    <h3>Rewards</h3>
-    <div class="row">
-      <div>Points: <span id="rwPoints" class="mono">0</span></div>
-      <div>Streak: <span id="rwStreak" class="mono">0</span></div>
-      <button onclick="rwCheckin()">Daily check-in (+10)</button>
-      <button onclick="rwClaim()">Claim 100 pts</button>
-    </div>
-  </div>
-</section>
-    </div><!-- /HUB -->
-
-
-  </div><!-- /tab-content -->
-
-  <div id="global-toast" class="toast position-fixed bottom-0 end-0 m-3" hidden></div>
-
-  <!-- Bootstrap JS (optional for tabs) -->
-  <script src="dev-shim.js?v=dev8"></script>
   <script src="/paper.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-  <script>window.FIAT_BASE = 'http://localhost:3001';</script>
-  
-  <!-- App script -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

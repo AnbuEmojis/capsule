@@ -1,36 +1,73 @@
 const express = require('express');
 const router = express.Router();
-const Reward = require('../models/Reward');
+const mongoose = require('mongoose');
 
-function uid(req){ return req.user?.id || req.session?.userId || req.body?.userId || req.query?.userId; }
-async function ensure(userId){ return Reward.findOneAndUpdate({ userId }, {}, { upsert:true, new:true }); }
+const RewardsSchema = new mongoose.Schema({
+  userId: { type: String, index: true, required: true },
+  points: { type: Number, default: 0 },
+  streak: { type: Number, default: 0 },
+  lastCheckin: { type: Date, default: null },
+  claims: { type: Number, default: 0 },
+}, { timestamps: true });
 
-// GET balance
-router.get('/balance', async (req,res)=>{
-  const r = await ensure(uid(req));
-  res.json({ points: r.points || 0, streak: r.streak || 0, lastCheckinAt: r.lastCheckinAt });
+const Rewards = mongoose.models.Rewards || mongoose.model('Rewards', RewardsSchema);
+
+function getUserId(req) {
+  return (req.user && (req.user.id || req.user._id)) || req.get('x-user-id') || 'dev:local';
+}
+
+async function getState(userId) {
+  let doc = await Rewards.findOne({ userId });
+  if (!doc) doc = await Rewards.create({ userId });
+  return doc;
+}
+
+router.get('/state', async (req, res) => {
+  try {
+    const doc = await getState(getUserId(req));
+    res.json({ points: doc.points, streak: doc.streak, lastCheckin: doc.lastCheckin, claims: doc.claims });
+  } catch (e) {
+    console.error('/api/rewards/state', e);
+    res.status(500).json({ error: 'internal_error' });
+  }
 });
 
-// Daily check-in
-router.post('/checkin', async (req,res)=>{
-  const r = await ensure(uid(req));
-  const now = new Date(); const last = r.lastCheckinAt ? new Date(r.lastCheckinAt) : null;
-  const newDay = !last || last.toDateString() !== now.toDateString();
-  if (!newDay) return res.status(400).json({ error:'already_checked_in' });
-  r.points = (r.points||0) + 10;
-  r.streak = (last && (now - last) < 48*3600e3) ? (r.streak||0) + 1 : 1;
-  r.lastCheckinAt = now;
-  r.ledger.push({ type:'checkin', delta:+10, note:'Daily' });
-  await r.save(); res.json({ ok:true, points:r.points, streak:r.streak });
+router.post('/checkin', async (req, res) => {
+  try {
+    const doc = await getState(getUserId(req));
+    const today = new Date(); today.setHours(0,0,0,0);
+    const last = doc.lastCheckin ? new Date(doc.lastCheckin) : null;
+    if (last) last.setHours(0,0,0,0);
+    if (last && +last === +today) return res.status(409).json({ error: 'already_checked_in', points: doc.points, streak: doc.streak });
+
+    let newStreak = 1;
+    if (last) {
+      const yday = new Date(today); yday.setDate(yday.getDate() - 1);
+      if (+last === +yday) newStreak = (doc.streak || 0) + 1;
+    }
+    doc.streak = newStreak;
+    doc.lastCheckin = new Date();
+    doc.points = (doc.points || 0) + 10;
+
+    await doc.save();
+    res.json({ ok: true, points: doc.points, streak: doc.streak });
+  } catch (e) {
+    console.error('/api/rewards/checkin', e);
+    res.status(500).json({ error: 'internal_error' });
+  }
 });
 
-// Claim
-router.post('/claim', async (req,res)=>{
-  const r = await ensure(uid(req));
-  if ((r.points||0) < 100) return res.status(400).json({ error:'not_enough_points' });
-  r.points -= 100;
-  r.ledger.push({ type:'claim', delta:-100, note:'Claim' });
-  await r.save(); res.json({ ok:true, points:r.points });
+router.post('/claim', async (req, res) => {
+  try {
+    const doc = await getState(getUserId(req));
+    doc.points = (doc.points || 0) + 100;
+    doc.claims = (doc.claims || 0) + 1;
+    await doc.save();
+    res.json({ ok: true, points: doc.points, claims: doc.claims });
+  } catch (e) {
+    console.error('/api/rewards/claim', e);
+    res.status(500).json({ error: 'internal_error' });
+  }
 });
 
 module.exports = router;

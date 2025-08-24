@@ -15,6 +15,17 @@ router.get('/info', async (req, res) => {
     const { address } = req.query;
     if (!address) return res.status(400).json({ error: 'missing_address' });
 
+    // after building `out` for /api/wallets/info:
+const FiatWallet = require('../models/FiatWallet'); // top of file once
+function getUserId(req) {
+  return (req.user && (req.user.id || req.user._id)) || req.get('x-user-id') || 'dev:local';
+}
+
+try {
+  const fw = await FiatWallet.findOne({ userId: getUserId(req) });
+  if (fw) out.nativeFromFiat = (fw.balanceCents || 0) / 100;
+} catch {}
+
     const chain = chainOf(req.app);
     const pool  = poolOf(req.app);
 

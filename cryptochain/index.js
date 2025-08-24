@@ -4,7 +4,8 @@ const express = require('express');
 const mongoose = require('mongoose');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const jwt = require('jsonwebtoken');
-
+const fiatRoutes    = require('../backend/routes/fiat');
+const rewardsRoutes = require('../backend/routes/rewards');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 // ---- project singletons ----
@@ -41,8 +42,6 @@ function tryRequireAny(candidates = []) {
   console.warn('⚠️  none of the route paths resolved:', candidates.join(', '));
   return null;
 }
-
-
 
 // auth middleware (JWT or dev bypass)
 function auth(req, res, next) {
@@ -133,7 +132,7 @@ mongoose
     if (process.env.DEV_OPEN_ROUTES === '1') app.use('/api/swaps', swapsRoutes);
     else app.use('/api/swaps', auth, swapsRoutes);
   }
-    const transfersRoutes = safeRequire('backend/routes/transfers');
+  const transfersRoutes = safeRequire('backend/routes/transfers');
   const liquidityRoutes = safeRequire('backend/routes/liquidity');
   const txRoutes        = safeRequire('backend/routes/transactions');
   const ratesRoutes     = safeRequire('backend/routes/rates');
@@ -154,6 +153,8 @@ mongoose
   // Some public (no auth) info routes
   if (quotesRoutes) app.use('/api/quotes', quotesRoutes);
   if (pricesRoutes) app.use('/api/prices', pricesRoutes);
+  app.use('/api/fiat',    fiatRoutes);
+  app.use('/api/rewards', rewardsRoutes);
 
   useIf('/api/wallets',      walletsRoutes);
   useIf('/api/transfers',    transfersRoutes);
