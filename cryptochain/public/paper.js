@@ -436,4 +436,158 @@
     window.fiatWithdraw = fiatWithdraw;
     window.fiatRefresh = fiatRefresh;
   })();
+
   
+  
+(function () {
+  // ---------- tiny API wrapper (respects dev-shim) ----------
+  async function api(path, opts = {}) {
+    const res = await fetch(path, {
+      method: opts.method || 'GET',
+      headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const err = new Error(`HTTP ${res.status}`);
+      err.status = res.status;
+      err.body = text;
+      throw err;
+    }
+    return res.json().catch(() => ({}));
+  }
+
+  // ---------- FIAT helpers ----------
+  async function fiatInit() {
+    try {
+      return await api('/api/fiat/init', { method: 'POST' });
+    } catch {
+      return { ok: false };
+    }
+  }
+
+  async function fiatBalance() {
+    try {
+      return await api('/api/fiat/balance');
+    } catch {
+      return { balanceCents: 0, currency: 'USD' };
+    }
+  }
+
+  async function fiatDeposit(amountCents, currency = 'usd') {
+    const { url } = await api('/api/fiat/deposit-checkout', {
+      method: 'POST',
+      body: { amountCents, currency },
+    });
+    if (url) location.href = url;
+  }
+
+  async function fiatWithdraw(amountCents) {
+    return api('/api/fiat/withdraw', {
+      method: 'POST',
+      body: { amountCents },
+    });
+  }
+
+  // ---------- Wire into your existing buttons ----------
+  const q = (s) => document.querySelector(s);
+  const byId = (id) => document.getElementById(id);
+
+  // If you already have handlers defined, you can keep them; these are safe defaults.
+  window.fiatInit = async () => {
+    const r = await fiatInit();
+    await refreshAll();
+    return r;
+  };
+
+  window.fiatDeposit = async () => {
+    const amt = Number(prompt('Amount (USD) to add to fiat wallet?')) || 0;
+    if (amt <= 0) return;
+    await fiatDeposit(Math.round(amt * 100), 'usd');
+  };
+
+  window.fiatWithdraw = async () => {
+    const amt = Number(prompt('Withdraw amount (USD) from fiat wallet?')) || 0;
+    if (amt <= 0) return;
+    try {
+      await fiatWithdraw(Math.round(amt * 100));
+      await refreshAll();
+      toast('Withdrawn from fiat wallet.');
+    } catch (e) {
+      toast('Withdraw failed.');
+    }
+  };
+
+  // ---------- Refresh helpers ----------
+  async function refreshFiatBadgeIntoNative() {
+    // Pull fiat balance and reflect it in the Native section label.
+    const r = await fiatBalance();
+    const usd = (r.balanceCents || 0) / 100;
+    // Find a place near your NATIVE readout; these selectors are conservative.
+    const nativeBox = document.querySelector('.balances') || document.body;
+    let tag = document.getElementById('native-fiat-mirror');
+    if (!tag) {
+      tag = document.createElement('div');
+      tag.id = 'native-fiat-mirror';
+      tag.style.cssText = 'margin-top:4px;font-size:12px;opacity:.8';
+      nativeBox.appendChild(tag);
+    }
+    tag.textContent = `NATIVE (fiat): ${usd.toFixed(2)} USD`;
+  }
+
+  async function refreshOnchain() {
+    // If you have an existing function to refresh CAP/wCAP/SOL balances, call it here.
+    // Example:
+    if (typeof window.refreshBalances === 'function') {
+      await window.refreshBalances();
+    }
+  }
+
+  async function refreshAll() {
+    await Promise.all([refreshFiatBadgeIntoNative(), refreshOnchain()]);
+  }
+
+  // ---------- Swap flow glue (after successful buy/sell, resync everything) ----------
+  async function onSwapSuccess() {
+    await refreshAll();
+    toast('Swap complete.');
+  }
+
+  // Wrap your existing Execute Buy button if present
+  (function patchExecuteBuy() {
+    const btn = Array.from(document.querySelectorAll('button')).find(
+      (b) => /Execute Buy/i.test(b.textContent || '')
+    );
+    if (!btn) return;
+    const original = btn.onclick;
+    btn.onclick = async (e) => {
+      try {
+        if (original) {
+          const maybePromise = original.call(btn, e);
+          if (maybePromise && typeof maybePromise.then === 'function') {
+            await maybePromise;
+          }
+        }
+        await onSwapSuccess();
+      } catch (err) {
+        // original handler already surfaced any errors
+      }
+    };
+  })();
+
+  // tiny toast
+  function toast(msg) {
+    try {
+      const el = document.createElement('div');
+      el.textContent = msg;
+      el.style.cssText =
+        'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#0a0f1a;color:#bff; border:1px solid #134; padding:8px 12px;border-radius:10px;z-index:9999';
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 1800);
+    } catch {}
+  }
+
+  // Initial pass after DOM ready
+  document.addEventListener('DOMContentLoaded', refreshAll);
+})();
