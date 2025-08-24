@@ -119,9 +119,11 @@
       alert('✅ Currency saved');
     });
   
-    // ====== FIAT (Section 4 & 5) ======
-  
-    // If you're running the dev fiat server on :3001, set window.FIAT_BASE='http://localhost:3001' in paper.html
+    /* =========================================================
+       FIAT / STRIPE (dev override + buttons)
+       ========================================================= */
+    // If you run the dev fiat server on :3001, define this in paper.html:
+    // <script>window.FIAT_BASE='http://localhost:3001'</script>
     const FIAT_BASE = (typeof window !== 'undefined' && window.FIAT_BASE) ? window.FIAT_BASE : '';
   
     async function fiatInit(){
@@ -132,6 +134,7 @@
       await fiatRefresh();
       alert('✅ Fiat wallet ready');
     }
+  
     async function fiatRefresh(){
       const r = await fetch(`${FIAT_BASE}/api/fiat/balance`);
       if (!r.ok) return;
@@ -140,9 +143,10 @@
       const cents = Number.isFinite(j.balanceCents) ? j.balanceCents : 0;
       const el = document.getElementById('fiatBalance');
       if (el) el.textContent = `${(cents/100).toFixed(2)} ${cur}`;
-      // also reflect fiat → Hub NATIVE readout
+      // also reflect pouch → Hub NATIVE
       updateNativeFromFiat(j.balanceCents || 0);
     }
+  
     async function fiatDeposit(){
       const amount = prompt('Deposit amount (USD):','10.00'); if (!amount) return;
       const r = await fetch(`${FIAT_BASE}/api/fiat/deposit-checkout`, {
@@ -154,6 +158,7 @@
       if (!r.ok || !j?.url) { alert('Could not start Stripe Checkout'); return; }
       location.assign(j.url);
     }
+  
     async function fiatWithdraw(){
       const amount = prompt('Withdraw amount (USD):','5.00'); if (!amount) return;
       const r = await fetch(`${FIAT_BASE}/api/fiat/withdraw`, {
@@ -165,28 +170,14 @@
       fiatRefresh();
     }
   
-    // Section 4: **Confirm** on return from Stripe Checkout
-    (async function(){
-      const q = new URLSearchParams(location.search);
-      const sid = q.get('session_id');
-      if (q.get('fiat') === 'success' && sid) {
-        try {
-          // Hit our /confirm endpoint to credit if webhook didn't
-          await fetch(`${FIAT_BASE}/api/fiat/confirm?session_id=${encodeURIComponent(sid)}`).then(()=>{});
-        } catch {}
-        await fiatRefresh();
-      } else if (q.get('fiat') === 'success') {
-        // No session id (rare), just refresh
-        await fiatRefresh();
-      }
-    })();
-  
     // Wire Settings buttons
     document.getElementById('fiatSetupBtn')?.addEventListener('click', fiatInit);
     document.getElementById('fiatDepositBtn')?.addEventListener('click', fiatDeposit);
     document.getElementById('fiatWithdrawBtn')?.addEventListener('click', fiatWithdraw);
   
-    // ===== prices / quotes (unchanged) =====
+    /* =========================================================
+       Quotes, balances, and Hub actions
+       ========================================================= */
     async function fetchRates(){
       try {
         const r = await api('/api/prices/latest');
@@ -197,6 +188,7 @@
         return state.rates;
       }
     }
+  
     function localQuote({ mode, amount }){
       const fx = state.rates || {};
       const f6 = (n)=>Number(n).toFixed(6);
@@ -210,6 +202,7 @@
       }
       return { ok:false, message:'Unsupported mode' };
     }
+  
     async function getQuoteOnline({ mode, amount }){
       try {
         const map = { native2cap:['NATIVE','CAP'], cap2native:['CAP','NATIVE'], cap2sol:['CAP','SOL'] };
@@ -222,14 +215,18 @@
       return localQuote({ mode, amount });
     }
   
-    // ===== Wallet info helpers (unchanged) =====
+    // Pull wallet info; prefer fiat pouch for NATIVE if provided by server
     async function getCapBalance(capAddr){
       if (!capAddr) return { capTokens:0, native:0 };
       const tryJSON = async url => { const r = await fetch(url,{headers:authHeaders()}); if (!r.ok) throw 0; return r.json(); };
-      try { return await tryJSON(`/api/wallets/info?address=${encodeURIComponent(capAddr)}`); } catch {}
-      try { return await tryJSON(`/api/wallets/info?address=${encodeURIComponent(capAddr)}`); } catch {}
+      try {
+        const d = await tryJSON(`/api/wallets/info?address=${encodeURIComponent(capAddr)}`);
+        const native = (d.nativeFromFiat != null) ? Number(d.nativeFromFiat) : Number(d.nativeOnChain || d.native || 0);
+        return { capTokens: Number(d.capTokens||0), native };
+      } catch {}
       return { capTokens:0, native:0 };
     }
+  
     async function getSolBalance(solPubkey){
       if (!solPubkey) return { sol:0, wcap:0 };
       const tryJSON = async url => { const r = await fetch(url,{headers:authHeaders()}); if (!r.ok) throw 0; return r.json(); };
@@ -238,7 +235,6 @@
       return { sol:0, wcap:0 };
     }
   
-    // ===== Portfolio UI (unchanged) =====
     function renderPortfolioRows(items){
       const body = $('#pf-list'); body.innerHTML = '';
       const fmt = n => Number(n).toLocaleString(undefined,{maximumFractionDigits:6});
@@ -276,7 +272,7 @@
   
         const items = [
           { symbol:'CAP',    name:'CAP on CAP chain',         balance:capB.capTokens||0, valueUsd:capUsd },
-          { symbol:'NATIVE', name:'Native coin on CAP chain', balance:capB.native||0,    valueUsd:nativeUsd },
+          { symbol:'NATIVE', name:'Native coin (fiat pouch)', balance:capB.native||0,    valueUsd:nativeUsd },
           { symbol:'SOL',    name:'Solana (devnet)',          balance:solB.sol||0,       valueUsd:solUsd },
           { symbol:'wCAP',   name:'Wrapped CAP (devnet)',     balance:solB.wcap||0,      valueUsd:wcapUsd },
         ];
@@ -307,7 +303,7 @@
         if (usdEl) usdEl.textContent = totalUsd.toLocaleString(undefined,{maximumFractionDigits:2});
         if (natEl) natEl.textContent = totalNative.toLocaleString(undefined,{maximumFractionDigits:6});
   
-        // mirror mini balances (if present)
+        // mirror mini balances
         const setTxt = (sel, v)=>{ const el = document.querySelector(sel); if (el) el.textContent = v.toLocaleString(); };
         setTxt('#bal-cap-cap', capB.capTokens||0);
         setTxt('#bal-cap-native', capB.native||0);
@@ -321,7 +317,7 @@
       }
     }
   
-    // ===== Hub actions (buy/sell/swap) — unchanged except refresh hook =====
+    // ===== Hub actions (buy/sell/swap) =====
     $('#buy-quote')?.addEventListener('click', async ()=>{
       await fetchRates();
       const amt = Number($('#buy-native').value||0); if (amt<=0) return;
@@ -405,7 +401,7 @@
       $('#btn-save-sol')?.addEventListener('click', ()=>{ const v=$('#sol-addr-input').value.trim(); if (!v) return toast('Paste Solana pubkey','warning'); state.addrs.sol=v; localStorage.setItem('sol_addr',v); toast('SOL address saved','success'); });
     }
   
-    // ===== Map fiat balance into Hub's NATIVE display (Section 5) =====
+    // ===== Map fiat balance into the Hub's NATIVE readout =====
     async function updateNativeFromFiat(fiatCentsMaybe){
       try {
         const cents = (typeof fiatCentsMaybe === 'number') ? fiatCentsMaybe
@@ -434,7 +430,7 @@
       updateNativeFromFiat().catch(()=>{});
     })();
   
-    // expose fiat helpers to window for buttons in HTML
+    // expose fiat helpers for Settings tab
     window.fiatInit = fiatInit;
     window.fiatDeposit = fiatDeposit;
     window.fiatWithdraw = fiatWithdraw;

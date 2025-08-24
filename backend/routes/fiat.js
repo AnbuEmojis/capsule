@@ -1,232 +1,232 @@
+// backend/routes/fiat.js
 const express = require('express');
 const router = express.Router();
 
+const dotenv = require('dotenv');
+dotenv.config({ path: 'cryptochain/.env' });
+
 const Stripe = require('stripe');
+const FiatWallet = require('../models/FiatWallet');
 
-// --- Stripe gating: usable only if key looks real AND not explicitly disabled ---
-const rawKey = (process.env.STRIPE_SECRET_KEY || '').trim();
-const STRIPE_ENABLED_FLAG = process.env.STRIPE_DISABLED !== '1';
-const STRIPE_USABLE =
-  /^sk_(test|live)_/.test(rawKey) &&
-  rawKey.length > 25 &&
-  !rawKey.includes('...') &&
-  STRIPE_ENABLED_FLAG;
+const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || '';
+const STRIPE_DISABLED = /^true$/i.test(process.env.STRIPE_DISABLED || '');
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'http://localhost:3000').replace(/\/+$/, '');
 
-const stripe = STRIPE_USABLE ? new Stripe(rawKey, { apiVersion: '2024-06-20' }) : null;
+const stripe = STRIPE_DISABLED ? null : new Stripe(STRIPE_KEY, { apiVersion: '2024-06-20' });
 
-// --- Models ---
-const mongoose = require('mongoose');
-
-const UserSchema = new mongoose.Schema({
-  email: { type:String, index:true },
-  name: String,
-  stripeCustomerId: String,
-}, { timestamps:true });
-const User = mongoose.models.User || mongoose.model('User', UserSchema);
-
-const FiatWalletSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, index: true, required: true },
-  currency: { type: String, default: 'USD' },
-  balanceCents: { type: Number, default: 0 },
-  ledger: [{
-    type: { type: String, enum: ['deposit','withdraw'] },
-    amountCents: Number,
-    stripePaymentIntent: String,
-    note: String,
-    at: { type: Date, default: Date.now }
-  }]
-}, { timestamps:true });
-FiatWalletSchema.index({ userId:1, 'ledger.stripePaymentIntent':1 });
-const FiatWallet = mongoose.models.FiatWallet || mongoose.model('FiatWallet', FiatWalletSchema);
-
-// ----------------- helpers -----------------
-function looksEmail(s){ return typeof s === 'string' && /.+@.+/.test(s); }
-function uid(req){
-  const h = (req.headers['x-user-id'] || req.headers['x-dev-user'] || '').trim();
-  return h || null;
-}
-async function ensureUser(req){
-  let user = null;
-  const id = uid(req);
-  if (id) { try { user = await User.findById(id); } catch {} }
-  if (!user) {
-    const demo = process.env.DEMO_EMAIL || 'demo@local.dev';
-    user = await User.findOne({ email: demo }) || await User.create({ email: demo, name: 'Demo User' });
+function ensureStripe(res) {
+  if (STRIPE_DISABLED) {
+    res.status(503).json({ error: 'stripe_disabled' });
+    return false;
   }
-  return user;
+  if (!STRIPE_KEY || !/^sk_(test|live)_/.test(STRIPE_KEY)) {
+    res.status(500).json({ error: 'stripe_key_invalid' });
+    return false;
+  }
+  return true;
 }
-async function ensureWallet(userId, currency='USD'){
+
+// In dev we’ll accept a "userId" from query/body (your UI stores it locally).
+// In prod, you’d read req.user.id from your auth middleware.
+function resolveUserId(req) {
+  return (req.query.userId || req.body?.userId || req.headers['x-user-id'] || 'dev-user').toString();
+}
+
+async function getOrCreateWalletByUserId(userId) {
   let w = await FiatWallet.findOne({ userId });
-  if (!w) w = await FiatWallet.create({ userId, currency, balanceCents:0, ledger:[] });
+  if (!w) w = await FiatWallet.create({ userId });
   return w;
 }
-function alreadyCredited(wallet, piId) {
-  if (!piId) return false;
-  return !!(wallet.ledger || []).some(e => e.type === 'deposit' && e.stripePaymentIntent === piId);
-}
 
-// ---------- INIT (POST) ----------
-router.post('/init', async (req,res)=>{
-  try{
-    const user = await ensureUser(req);
-    const wallet = await ensureWallet(user._id);
+/* -------------------------
+   POST /api/fiat/init
+   - Ensures a FiatWallet + Stripe customer
+--------------------------*/
+router.post('/init', async (req, res) => {
+  try {
+    const userId = resolveUserId(req);
+    let wallet = await getOrCreateWalletByUserId(userId);
 
-    let stripeCustomerId = user.stripeCustomerId || null;
-
-    if (STRIPE_USABLE && !stripeCustomerId) {
-      try {
-        const params = {};
-        if (looksEmail(user.email)) params.email = user.email;
-        if (user.name) params.name = user.name;
-        const customer = await stripe.customers.create(params);
-        stripeCustomerId = customer.id;
-        user.stripeCustomerId = stripeCustomerId;
-        try { await user.save(); } catch (_) {}
-      } catch (e) {
-        console.warn('[fiat:init] could not create stripe customer (continuing):', e?.type || e?.message || e);
-        stripeCustomerId = null;
-      }
+    if (!STRIPE_DISABLED && !wallet.stripeCustomerId) {
+      const customer = await stripe.customers.create({
+        metadata: { userId },
+        description: `CAP fiat wallet for ${userId}`
+      });
+      wallet.stripeCustomerId = customer.id;
+      await wallet.save();
     }
 
-    return res.json({
+    res.json({
       ok: true,
-      userId: String(user._id),
-      stripeCustomerId,
-      stripeDisabled: !STRIPE_USABLE,
-      balanceCents: wallet.balanceCents,
+      userId: wallet.userId,
+      stripeCustomerId: wallet.stripeCustomerId || null,
+      stripeDisabled: !!STRIPE_DISABLED,
+      balanceCents: wallet.balanceCents || 0,
       currency: wallet.currency || 'USD'
     });
   } catch (e) {
-    console.error('/api/fiat/init fatal', e);
-    return res.status(200).json({ ok:true, stripeDisabled: !STRIPE_USABLE, balanceCents:0, currency:'USD' });
+    console.error('/api/fiat/init', e);
+    res.status(500).json({ error: 'internal_error' });
   }
 });
 
-// ---------- DEPOSIT CHECKOUT (POST) ----------
-router.post('/deposit-checkout', async (req,res)=>{
-  try{
-    const { amountCents, currency='usd' } = req.body || {};
-    if (!amountCents || amountCents <= 0) return res.status(400).json({ error:'bad_amount' });
+/* -------------------------
+   GET /api/fiat/balance?[userId=...]
+--------------------------*/
+router.get('/balance', async (req, res) => {
+  try {
+    const userId = req.query.userId ? String(req.query.userId) : null;
 
-    const user = await ensureUser(req);
-    if (!STRIPE_USABLE) return res.status(400).json({ error:'stripe_disabled' });
+    let wallet;
+    if (userId) {
+      wallet = await FiatWallet.findOne({ userId });
+    } else if (req.query.customerId) {
+      wallet = await FiatWallet.findOne({ stripeCustomerId: req.query.customerId });
+    } else {
+      // Dev fallback: last-updated wallet
+      wallet = await FiatWallet.findOne().sort({ updatedAt: -1 });
+    }
+
+    res.json({
+      balanceCents: wallet?.balanceCents || 0,
+      currency: (wallet?.currency || 'USD').toUpperCase()
+    });
+  } catch (e) {
+    console.error('/api/fiat/balance', e);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+/* -------------------------
+   POST /api/fiat/deposit-checkout
+   body: { amountCents, currency?, userId? }
+--------------------------*/
+router.post('/deposit-checkout', async (req, res) => {
+  try {
+    if (!ensureStripe(res)) return;
+    const userId = resolveUserId(req);
+    const { amountCents, currency = 'usd' } = req.body || {};
+    if (!Number.isFinite(amountCents) || amountCents <= 0) {
+      return res.status(400).json({ error: 'bad_amount' });
+    }
+
+    const wallet = await getOrCreateWalletByUserId(userId);
+    if (!wallet.stripeCustomerId) {
+      const customer = await stripe.customers.create({ metadata: { userId } });
+      wallet.stripeCustomerId = customer.id;
+      await wallet.save();
+    }
 
     const session = await stripe.checkout.sessions.create({
-      customer: user.stripeCustomerId || undefined,
       mode: 'payment',
-      allow_promotion_codes: true,
-      currency,
+      customer: wallet.stripeCustomerId,
+      payment_method_types: ['card'],
+      success_url: `${PUBLIC_BASE_URL}/paper.html?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${PUBLIC_BASE_URL}/paper.html?canceled=1`,
       line_items: [{
         quantity: 1,
         price_data: {
-          currency,
-          unit_amount: amountCents,
-          product_data: { name: 'Fiat wallet deposit' }
+          currency: currency.toLowerCase(),
+          unit_amount: Math.round(amountCents),
+          product_data: { name: 'Deposit to CAP NATIVE' }
         }
       }],
-      payment_intent_data: {
-        metadata: {
-          purpose: 'fiat_deposit',
-          userId: String(user._id)
-        }
-      },
-      success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/paper.html?fiat=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url:  `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/paper.html?fiat=cancel`
+      metadata: { walletUserId: wallet.userId }
     });
 
-    return res.json({ url: session.url });
+    res.json({ url: session.url });
   } catch (e) {
     console.error('/api/fiat/deposit-checkout', e);
-    return res.status(500).json({ error:'internal_error' });
+    res.status(500).json({ error: 'internal_error' });
   }
 });
 
-// ---------- CONFIRM (GET) ----------
+/* -------------------------
+   GET /api/fiat/confirm?session_id=cs_test_...
+   - Looks up the Stripe session
+   - Credits wallet matched by session.customer
+   - Idempotent via session_id check in ledger
+--------------------------*/
 router.get('/confirm', async (req, res) => {
   try {
-    if (!STRIPE_USABLE) return res.status(400).json({ error: 'stripe_disabled' });
-    const { session_id } = req.query || {};
-    if (!session_id) return res.status(400).json({ error: 'missing_session_id' });
-
-    const session = await stripe.checkout.sessions.retrieve(String(session_id), { expand: ['payment_intent'] });
-    const pi = session.payment_intent;
-    const amount = session.amount_total ?? pi?.amount_received ?? 0;
-
-    if ((session.status === 'complete' || session.payment_status === 'paid') && amount > 0) {
-      const userId = pi?.metadata?.userId;
-      const user = userId ? { _id: userId } : await ensureUser(req);
-      const wallet = await ensureWallet(user._id);
-
-      const dup = alreadyCredited(wallet, pi?.id);
-      if (!dup) {
-        wallet.balanceCents += amount;
-        wallet.ledger.push({ type: 'deposit', amountCents: amount, stripePaymentIntent: pi?.id, note: 'Stripe Checkout confirm' });
-        await wallet.save();
-      }
-
-      return res.json({ ok: true, balanceCents: wallet.balanceCents, credited: dup ? 0 : amount, alreadyCredited: dup });
+    if (!ensureStripe(res)) return;
+    const sid = String(req.query.session_id || '');
+    if (!sid || !/^cs_(test|live)_/.test(sid)) {
+      return res.status(400).json({ error: 'bad_session_id' });
     }
-    return res.status(202).json({ pending: true, status: session.status, payment_status: session.payment_status });
+
+    const session = await stripe.checkout.sessions.retrieve(sid, { expand: ['payment_intent', 'customer'] });
+    if (!session) return res.status(404).json({ error: 'not_found' });
+
+    if (session.payment_status !== 'paid') {
+      return res.status(409).json({ error: 'not_paid', payment_status: session.payment_status });
+    }
+
+    const amountCents = session.amount_total;
+    const currency = (session.currency || 'usd').toUpperCase();
+    const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
+
+    if (!customerId) return res.status(422).json({ error: 'missing_customer' });
+
+    let wallet = await FiatWallet.findOne({ stripeCustomerId: customerId });
+    if (!wallet) {
+      // last resort: try metadata from customer
+      const cust = await stripe.customers.retrieve(customerId);
+      const userId = (cust?.metadata?.userId) || 'unknown';
+      wallet = await getOrCreateWalletByUserId(userId);
+      if (!wallet.stripeCustomerId) {
+        wallet.stripeCustomerId = customerId;
+      }
+    }
+
+    // Apply deposit once
+    const applied = wallet.applyDeposit({ amountCents, currency, sessionId: sid });
+    if (applied) await wallet.save();
+
+    return res.json({
+      ok: true,
+      applied,
+      balanceCents: wallet.balanceCents,
+      currency: wallet.currency
+    });
   } catch (e) {
     console.error('/api/fiat/confirm', e);
-    return res.status(500).json({ error: 'internal_error' });
+    // surface useful info in dev
+    res.status(500).json({ error: 'internal_error', detail: e?.type || e?.message || 'stripe_error' });
   }
 });
 
-// ---------- WEBHOOK (POST) ----------
-router.post('/webhook', express.json({ type:'application/json' }), async (req,res)=>{
-  try{
-    if (!STRIPE_USABLE) return res.json({ received:true, disabled:true });
-    const event = req.body;
-
-    if (event.type === 'payment_intent.succeeded'){
-      const pi = event.data.object;
-      if (pi.metadata?.purpose === 'fiat_deposit'){
-        const userId = pi.metadata.userId;
-        const wallet = await ensureWallet(userId);
-        const dup = alreadyCredited(wallet, pi.id);
-        if (!dup) {
-          wallet.balanceCents += pi.amount_received;
-          wallet.ledger.push({ type:'deposit', amountCents: pi.amount_received, stripePaymentIntent: pi.id, note:'Stripe deposit' });
-          await wallet.save();
-        }
-        return res.json({ received:true, alreadyCredited: dup });
-      }
+/* -------------------------
+   POST /api/fiat/withdraw
+   body: { amountCents, currency?, userId? }
+--------------------------*/
+router.post('/withdraw', async (req, res) => {
+  try {
+    const userId = resolveUserId(req);
+    const { amountCents, currency = 'USD' } = req.body || {};
+    if (!Number.isFinite(amountCents) || amountCents <= 0) {
+      return res.status(400).json({ error: 'bad_amount' });
     }
-    return res.json({ received:true });
-  } catch (e) {
-    console.error('/api/fiat/webhook', e);
-    return res.status(500).json({ error:'internal_error' });
-  }
-});
-
-// ---------- BALANCE (GET) ----------
-router.get('/balance', async (req,res)=>{
-  try{
-    const user = await ensureUser(req);
-    const wallet = await FiatWallet.findOne({ userId: user._id });
-    return res.json({ balanceCents: wallet?.balanceCents || 0, currency: (wallet?.currency || 'USD') });
-  } catch (e) {
-    console.error('/api/fiat/balance', e);
-    return res.status(500).json({ error:'internal_error' });
-  }
-});
-
-// ---------- WITHDRAW (POST) ----------
-router.post('/withdraw', async (req,res)=>{
-  try{
-    const user = await ensureUser(req);
-    const { amountCents } = req.body || {};
-    const wallet = await ensureWallet(user._id);
-    if (!amountCents || amountCents > wallet.balanceCents) return res.status(400).json({ error:'insufficient_funds' });
-    wallet.balanceCents -= amountCents;
-    wallet.ledger.push({ type:'withdraw', amountCents, note:'Simulated withdraw' });
+    const wallet = await getOrCreateWalletByUserId(userId);
+    wallet.applyWithdraw({ amountCents: Math.round(amountCents), currency });
     await wallet.save();
-    return res.json({ ok:true, balanceCents: wallet.balanceCents });
+    res.json({ ok: true, balanceCents: wallet.balanceCents, currency: wallet.currency });
   } catch (e) {
     console.error('/api/fiat/withdraw', e);
-    return res.status(500).json({ error:'internal_error' });
+    const code = e.message === 'insufficient_funds' ? 400 : 500;
+    res.status(code).json({ error: e.message || 'internal_error' });
   }
+});
+
+/* -------------------------
+   (optional) GET /api/fiat/diag
+--------------------------*/
+router.get('/diag', async (req, res) => {
+  res.json({
+    stripeDisabled: !!STRIPE_DISABLED,
+    stripeKeyLooksValid: !!/^sk_(test|live)_/.test(STRIPE_KEY),
+    publicBaseUrl: PUBLIC_BASE_URL
+  });
 });
 
 module.exports = router;
