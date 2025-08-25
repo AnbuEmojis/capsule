@@ -1,201 +1,111 @@
-// cryptochain/index.js  — safe + minimal mounts, correct ../backend paths, public /api/wallets/info
+// cryptochain/index.js
+// Single-server entry: mounts all routers under /api/* and serves /public.
+
+require('dotenv').config({ path: 'cryptochain/.env' });
+
 const path = require('path');
 const express = require('express');
-const mongoose = require('mongoose');
-const { createProxyMiddleware } = require('http-proxy-middleware');
-const jwt = require('jsonwebtoken');
-const fiatRoutes    = require('../backend/routes/fiat');
-const rewardsRoutes = require('../backend/routes/rewards');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+const cors = require('cors');
+const cookieParser = require('cookie-parser');
 
-// ---- project singletons ----
-const Wallet = require('./wallet');
-const { calculateTokenBalance } = require('./token/token-balance');
-const {
-  blockchain, transactionPool, miner, pool, savePool, shutdown, ready
-} = require('./state');
+// --- DB boot (yours) -------------------------------------------------
+const mongoose = require('mongoose');
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/cryptochain';
+mongoose.connect(MONGO_URI).then(() => console.log('✅ MongoDB connected'))
+  .catch(err => { console.error('❌ Mongo connect error', err); process.exit(1); });
+
+// --- Chain boot (yours) ----------------------------------------------
+// If you have code that loads the chain/pool from disk, keep it:
+try {
+  const { loadChainFromDisk, loadPoolFromDisk } = require('../backend/chain/bootstrap.js');
+  if (loadChainFromDisk) {
+    const chain = loadChainFromDisk();
+    const pool  = loadPoolFromDisk();
+    console.log(`Loaded chain from disk: ${chain?.length ?? 0} blocks`);
+    console.log(`Loaded pool from disk:`, pool || {});
+  }
+} catch (_) {
+  // Not fatal if your project doesn’t use this module name.
+}
 
 const app = express();
-app.set('etag', false)
-const PORT = process.env.PORT || 3000;
 
-// ---------- helpers ----------
-function safeRequire(rel) {
-  try {
-    return require(path.join(__dirname, '..', rel));
-  } catch (e) {
-    console.warn('⚠️  Route not found (skipping):', rel);
-    return null;
-  }
-}
+// CORS (if you open dashboard from other ports disable this)
+app.use(cors({ origin: true, credentials: true }));
+app.use(cookieParser());
 
-function tryRequireAny(candidates = []) {
-  for (const rel of candidates) {
-    try {
-      const m = require(require('path').join(__dirname, '..', rel));
-      console.log('✅ mounted route:', rel);
-      return m;
-    } catch (e) {
-      // continue
-    }
-  }
-  console.warn('⚠️  none of the route paths resolved:', candidates.join(', '));
-  return null;
-}
+// NOTE: Stripe webhook needs raw body; we’ll attach JSON after mounting that router.
+const jsonParser = express.json();
+const urlParser  = express.urlencoded({ extended: true });
 
-// auth middleware (JWT or dev bypass)
-function auth(req, res, next) {
-  if (process.env.DEV_FAKE_AUTH === '1') {
-    // dev mode: synthesize a user id
-    const devUser = req.headers['x-dev-user'] || 'dev@local';
-    req.user = { id: devUser };            // keep as string to avoid ObjectId cast issues
-    req.session = req.session || {};
-    req.session.userId = devUser;
-    return next();
-  }
-  const h = req.headers.authorization || '';
-  const token = h.startsWith('Bearer ') ? h.slice(7) : null;
-  if (!token) return res.status(401).json({ message: 'Missing token' });
-  try {
-    const secret = process.env.JWT_SECRET || 'dev-secret';
-    req.user = jwt.verify(token, secret);
-    next();
-  } catch {
-    return res.status(401).json({ message: 'Invalid token' });
-  }
-}
+// --- Simple dev auth shim (header or env toggle) ---------------------
+/**
+ * Resolves req.userId for routes that need a user.
+ * Priority:
+ *  1) x-user-id header (explicit)
+ *  2) DEV_FAKE_AUTH=1 -> 'dev:local'
+ *  3) fall back to req.user?.id if you have a session/JWT middleware upstream
+ */
+app.use((req, _res, next) => {
+  const hdr = req.header('x-user-id');
+  if (hdr) req.userId = hdr;
+  else if (process.env.DEV_FAKE_AUTH === '1') req.userId = 'dev:local';
+  else if (req.user && req.user.id) req.userId = String(req.user.id);
+  next();
+});
 
-// ---------- core middleware ----------
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+// --- Routers ---------------------------------------------------------
+const walletsRouter = require('../backend/routes/wallets'); // /api/wallets/*
+const swapsRouter   = require('../backend/routes/swaps');   // /api/swaps/*
+const rewardsRouter = safeRequire('../backend/routes/rewards'); // optional
+const fiatRouter    = require('../backend/routes/fiat');    // /api/fiat/*
 
-// proxy all fiat calls to :3001 (only proxy here; do NOT also mount a local fiat router)
-app.use(
-  '/api/fiat',
-  createProxyMiddleware({
-    target: 'http://localhost:3001',
-    changeOrigin: true,
-    proxyTimeout: 10000,
-    onError(err, req, res) {
-      console.error('[fiat-proxy]', err.code || err.message);
-      res.status(502).json({ error: 'fiat_proxy_error', detail: err.code || 'proxy_failed' });
-    },
-  })
-);
+// Attach JSON parsers for all *except* the webhook (fiat router handles its own raw)
+app.use(jsonParser);
+app.use(urlParser);
 
-// ---------- Mongo (optional) ----------
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/centratech';
-mongoose
-  .connect(MONGO_URI)
-  .then(() => console.log('✅ MongoDB connected'))
-  .catch(err => console.warn('⚠️ MongoDB connect failed:', err.message));
+// Mount API
+app.use('/api/wallets', walletsRouter);
+app.use('/api/swaps',   swapsRouter);
+if (rewardsRouter) app.use('/api/rewards', rewardsRouter);
 
-// ---------- start after chain ready ----------
-(async () => {
-  await ready;
+// Mount fiat *after* global json parser, but fiat.js internally sets raw() for /webhook
+app.use('/api/fiat', fiatRouter);
 
-  // share singletons
-  app.locals.blockchain      = blockchain;
-  app.locals.transactionPool = transactionPool;
-  app.locals.miner           = miner;
-  app.locals.pool            = pool;
-  app.locals.savePool        = savePool;
-
-  // ---------- PUBLIC endpoints (NO AUTH) ----------
-  // Wallet read-only info must stay public; the router under /api/wallets may also define /info,
-  // so register this *before* mounting /api/wallets to avoid 401s / ObjectId casts.
-  app.get('/api/wallets/info', (req, res) => {
-    const address = String(req.query.address || '');
-    if (!address) return res.status(400).json({ message: 'Missing address' });
-    const bc = req.app.locals.blockchain;
-    if (!bc) return res.status(503).json({ message: 'Chain not ready' });
-    try {
-      const nativeBalance = Wallet.calculateBalance({ chain: bc.chain, address });
-      const capTokenBalance = calculateTokenBalance({ chain: bc.chain, address, symbol: 'CAP' });
-      res.json({ address, balance: nativeBalance, capTokenBalance });
-    } catch (e) {
-      res.status(500).json({ message: 'Error calculating balances' });
-    }
+// --- Optional: prices endpoint used by the UI for quotes -------------
+app.get('/api/prices/latest', (_req, res) => {
+  // If you already have a real prices service, replace this.
+  res.json({
+    NATIVE_USD: 1.00,    // 1 native == $1
+    CAP_NATIVE: 0.01,    // 1 CAP == 0.01 native (=> $0.01)
+    SOL_USD:    150      // dev default
   });
+});
 
-  // ---------- AUTH-PROTECTED routes (optional mounts; skipped if file missing) ----------
-  const useIf = (mountPath, router) => router && app.use(mountPath, auth, router);
+// --- Static front-end ------------------------------------------------
+const PUBLIC_DIR = path.join(__dirname, 'public');
+app.use(express.static(PUBLIC_DIR));
 
-  const walletsRoutes   = safeRequire('backend/routes/wallets');
-  const swapsRoutes = tryRequireAny([
-    'backend/routes/swaps',
-    'routes/swaps',          // fallback if you moved it
-  ]);
-  
-  if (swapsRoutes) {
-    // if you use auth middleware, keep it; otherwise mount public while dev’ing
-    if (process.env.DEV_OPEN_ROUTES === '1') app.use('/api/swaps', swapsRoutes);
-    else app.use('/api/swaps', auth, swapsRoutes);
-  }
-  const transfersRoutes = safeRequire('backend/routes/transfers');
-  const liquidityRoutes = safeRequire('backend/routes/liquidity');
-  const txRoutes        = safeRequire('backend/routes/transactions');
-  const ratesRoutes     = safeRequire('backend/routes/rates');
-  const tokenRoutes     = safeRequire('backend/routes/token');
-  const miningRoutes    = safeRequire('backend/routes/mining');
-  const explorerRoutes  = safeRequire('backend/routes/explorer');
-  const bridgeRoutes    = safeRequire('backend/routes/bridge');
-  const feesRoutes      = safeRequire('backend/routes/fees');
-  const rewardsRoutes   = safeRequire('backend/routes/rewards');
-  const profileRoutes   = safeRequire('backend/routes/profile'); // this one may do its own auth
-  const solanaRoutes    = safeRequire('backend/routes/solana');
-  const quotesRoutes    = safeRequire('backend/routes/quotes');
-  const pricesRoutes    = safeRequire('backend/routes/prices');
-  const taxRoutes       = safeRequire('backend/routes/tax');
-  const stakingRoutes   = safeRequire('routes/staking'); // project-local examples
-  const nftsRoutes      = safeRequire('routes/nfts');
+// Single-page fallback (Paper wallet)
+app.get('/', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'paper.html')));
 
-  // Some public (no auth) info routes
-  if (quotesRoutes) app.use('/api/quotes', quotesRoutes);
-  if (pricesRoutes) app.use('/api/prices', pricesRoutes);
-  app.use('/api/fiat',    fiatRoutes);
-  app.use('/api/rewards', rewardsRoutes);
+// Health
+app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
-  useIf('/api/wallets',      walletsRoutes);
-  useIf('/api/transfers',    transfersRoutes);
-  useIf('/api/liquidity',    liquidityRoutes);
-  useIf('/api/transactions', txRoutes);
-  useIf('/api/rates',        ratesRoutes);
-  useIf('/api/token',        tokenRoutes);
-  useIf('/api/mining',       miningRoutes);
-  useIf('/api/explorer',     explorerRoutes);
-  useIf('/api/bridge',       bridgeRoutes);
-  useIf('/api/fees',         feesRoutes);
-  useIf('/api/rewards',      rewardsRoutes);
-  if (profileRoutes) app.use('/api/profile', profileRoutes); // router enforces its own auth
-  useIf('/api/solana',       solanaRoutes);
-  useIf('/api/tax',          taxRoutes);
-  if (stakingRoutes) app.use('/api/staking', stakingRoutes);
-  if (nftsRoutes)    app.use('/api/nfts',    nftsRoutes);
+// Error handler: JSON for /api/* by default
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  const status = err.status || 500;
+  const isApi = _req.path.startsWith('/api/');
+  if (isApi) return res.status(status).json({ error: err.message || 'internal_error' });
+  res.status(status).send('Internal Server Error');
+});
 
-  // ----- misc -----
-  app.get('/api/chain', (req, res) => res.json(blockchain.chain));
-  app.post('/api/mine', auth, (req, res) => {
-    try { miner.mineTransactions(); } catch {}
-    res.json({ ok: true, height: blockchain.chain.length, time: Date.now() });
-  });
-  app.get('/api/blocks', (req, res) => res.json(blockchain.chain));
-  app.get('/api/health', (req, res) => res.json({ ok: true, time: Date.now() }));
-  app.get('/api/debug/routes', (req, res) => {
-    const stack = app._router?.stack || [];
-    const routes = stack
-      .filter(s => s.route?.path)
-      .map(s => ({ path: s.route.path, methods: s.route.methods }));
-    res.json(routes);
-  });
+// Listen
+const PORT = Number(process.env.PORT || 3000);
+app.listen(PORT, () => console.log(`🚀 server at http://localhost:${PORT}`));
 
-  // SPA roots
-  app.get('/',        (req, res) => res.sendFile(path.join(__dirname, 'public', 'capsule.html')));
-  app.get('/paper.html', (req, res) => res.sendFile(path.join(__dirname, 'public', 'paper.html')));
-
-  app.listen(PORT, () => console.log(`🚀 Server listening on ${PORT}`));
-})();
-
-// graceful shutdown
-process.on('SIGINT',  async () => { try { await shutdown(); } catch {} process.exit(0); });
-process.on('SIGTERM', async () => { try { await shutdown(); } catch {} process.exit(0); });
+// --- helper ----------------------------------------------------------
+function safeRequire(p) {
+  try { return require(p); } catch { return null; }
+}

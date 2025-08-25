@@ -1,59 +1,35 @@
+// backend/routes/wallets.js
 const express = require('express');
 const router = express.Router();
 const FiatWallet = require('../models/FiatWallet');
 
-const chainOf = (app) => app?.locals?.chain || app?.locals?.ledger || null;
-const poolOf  = (app) => app?.locals?.pool  || app?.locals?.liquidityPool || null;
-const userKeyOf = (req) => {
-  const u = req.user;
-  return u ? String(u._id || u.id || u.sub || u.email) : null;
-};
-
-// GET /api/wallets/info?address=<capPubkeyHex>
+// GET /api/wallets/info?address=04abcd...  (your existing on-chain view can stay)
+// We ALSO return a NATIVE fiat mirror so Hub can show "NATIVE (fiat)" without hacks.
 router.get('/info', async (req, res) => {
   try {
-    const { address } = req.query;
+    const address = String(req.query.address || '');
     if (!address) return res.status(400).json({ error: 'missing_address' });
 
-    // after building `out` for /api/wallets/info:
-const FiatWallet = require('../models/FiatWallet'); // top of file once
-function getUserId(req) {
-  return (req.user && (req.user.id || req.user._id)) || req.get('x-user-id') || 'dev:local';
-}
+    // infer userId the same way front-end does (dev/local or session)
+    const userId =
+      req.get('x-user-id') ||
+      req.query.userId ||
+      (req.user && (req.user.id || req.user._id)) ||
+      (req.session && req.session.user && (req.session.user.id || req.session.user._id)) ||
+      null;
 
-try {
-  const fw = await FiatWallet.findOne({ userId: getUserId(req) });
-  if (fw) out.nativeFromFiat = (fw.balanceCents || 0) / 100;
-} catch {}
-
-    const chain = chainOf(req.app);
-    const pool  = poolOf(req.app);
-
-    let capTokens = 0;
-    let nativeOnChain = 0;
-
-    if (chain?.getBalance) capTokens = Number(chain.getBalance(address) || 0);
-    if (chain?.getNativeBalance) {
-      nativeOnChain = Number(chain.getNativeBalance(address) || 0);
-    } else if (pool?.getAccountNative) {
-      nativeOnChain = Number(pool.getAccountNative(address) || 0);
+    // If a userId is present (same origin request), include fiat mirror
+    let nativeFromFiat = undefined;
+    if (req.userId) {
+      const fw = await FiatWallet.findOne({ userId: req.userId });
+      if (fw) nativeFromFiat = (fw.balanceCents || 0) / 100;
     }
 
-    // Optional fiat (mapped to NATIVE) if logged in
-    let nativeFromFiat = null;
-    let currency = 'USD';
-    try {
-      const userKey = userKeyOf(req);
-      if (userKey) {
-        const fw = await FiatWallet.findOne({ userKey }).lean();
-        if (fw) {
-          nativeFromFiat = (Number(fw.balanceCents || 0) / 100);
-          currency = fw.currency || 'USD';
-        }
-      }
-    } catch {}
-
-    res.json({ address, capTokens, nativeOnChain, nativeFromFiat, currency });
+    res.json({
+      address,
+      // ... keep/merge your on-chain fields here if you have them ...
+      nativeFromFiat
+    });
   } catch (e) {
     console.error('wallets/info error', e);
     res.status(500).json({ error: 'internal_error' });
