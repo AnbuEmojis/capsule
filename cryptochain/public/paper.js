@@ -420,4 +420,51 @@
       if (t && t.matches('[data-tab="#tab-rewards"], #rewards-tab')) setTimeout(rwRefresh, 0);
     });
   })();
-  
+  // After Stripe Checkout redirect, confirm the session on the server, then refresh balance.
+// We poll a few times because payment_status can settle a moment after redirect.
+(async function handleStripeReturn() {
+  const q = new URLSearchParams(location.search);
+  if (q.get('fiat') !== 'success') return;
+
+  const sessionId = q.get('session_id');
+  if (!sessionId) {
+    console.warn('Stripe success missing session_id');
+    window.fiatRefresh?.();
+    return;
+  }
+
+  async function runConfirmOnce() {
+    const r = await fetch(`/api/fiat/confirm?session_id=${encodeURIComponent(sessionId)}`, {
+      credentials: 'include'
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      // If your server dedupes, it may return 409 after already crediting.
+      if (r.status === 409) return { ok: true, credited: true };
+      console.warn('fiat/confirm error', r.status, j);
+      return { ok: false, retry: true };
+    }
+    return j; // expect { ok:true, credited:true|false, status:'paid'|'unpaid' }
+  }
+
+  // Poll up to ~10s for a definite answer
+  let attempts = 0;
+  while (attempts < 10) {
+    const res = await runConfirmOnce();
+    if (res?.ok && (res.credited || res.status === 'paid')) break;
+    await new Promise(r => setTimeout(r, 1000));
+    attempts++;
+  }
+
+  // Always refresh the UI; if it credited, you'll see the new balance
+  if (typeof window.fiatRefresh === 'function') await window.fiatRefresh();
+
+  // Clean the URL so we don't re-confirm on reload
+  try {
+    const url = new URL(location.href);
+    url.searchParams.delete('fiat');
+    url.searchParams.delete('session_id');
+    history.replaceState({}, '', url.toString());
+  } catch {}
+})();
+
