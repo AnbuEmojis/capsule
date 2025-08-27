@@ -40,6 +40,12 @@ app.use(session({
   })
 }));
 
+// expose chain plumbing (safe if none attached)
+app.locals.chain   = app.locals.chain   || null;
+app.locals.mempool = app.locals.mempool || null;
+app.locals.miner   = app.locals.miner   || null;
+
+
 // populate req.userId
 app.use((req, _res, next) => {
   if (req.session && req.session.userId) req.userId = req.session.userId;
@@ -85,6 +91,20 @@ app.get('/', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'paper.html')));
 // health + alias to avoid 404s
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 app.get('/api/profile/me', (req, res) => { res.json({ userId: req.userId || null }); });
+app.get('/api/chain/height', (req, res) => {
+  const h = req.app.locals.chain && typeof req.app.locals.chain.height !== 'undefined'
+    ? req.app.locals.chain.height
+    : null;
+  res.json({ height: h });
+});
+
+app.get('/api/chain/recent', (req, res) => {
+  const chain = req.app.locals.chain;
+  const blocks = (chain && typeof chain.getRecentBlocks === 'function')
+    ? chain.getRecentBlocks(5)
+    : null;
+  res.json({ blocks });
+});
 
 // error handler
 app.use((err, req, res, _next) => {
