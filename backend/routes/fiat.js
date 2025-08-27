@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Stripe = require('stripe');
 const FiatWallet = require('../models/FiatWallet');
+const chainBridge = require('../services/chainBridge');
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' });
 
@@ -89,6 +90,16 @@ router.get('/confirm', async (req, res) => {
       fw.credits.push(sess.id);
       await fw.save();
     }
+
+    // Minimal chain event (1:1 USD -> NATIVE)
+await chainBridge.recordFiatDeposit(req, {
+  userId: req.user?.id || req.headers['x-user-id'] || 'unknown',
+  address: req.body?.address || req.query?.address || req.user?.address || 'unknown',
+  amountCents,
+  currency: (currency || 'USD').toUpperCase(),
+  stripeSessionId: sessionId  // whatever var you already have
+});
+
     res.json({ ok: true, balanceCents: fw.balanceCents, currency: fw.currency || 'USD' });
   } catch (e) { console.error('/fiat/confirm', e); res.status(500).json({ error: 'internal_error' }); }
 });

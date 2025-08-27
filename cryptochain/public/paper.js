@@ -161,6 +161,12 @@ async function fiatDeposit(){
     const j = await json(`/fiat/deposit-checkout`, {
       amountCents: Math.round(parseFloat(amount)*100), currency:'usd'
     });
+    body: JSON.stringify({
+      amountCents: Math.round(parseFloat(amount) * 100),
+      currency: 'usd',
+      address: window.currentWallet || window.wallet?.address || getAddressFromUI() // whichever you already have
+    })
+    
     if (!j?.url) return toast('Could not start Stripe Checkout','warning');
     location.assign(j.url);
   } catch { toast('Could not start Stripe Checkout','warning'); }
@@ -334,6 +340,7 @@ $('#buy-exec')?.addEventListener('click', async ()=>{
     const toCap    = ($('#buy-dst-cap')?.value||'').trim();
     if (!(amountIn>0) || !toCap) return toast('Amount + destination required','warning');
 
+    // ⬇️ POST JSON (this is the 400/401 fix)
     const r = await json('/swaps/execute', {
       fromToken:'NATIVE',
       toToken:'CAP',
@@ -343,26 +350,50 @@ $('#buy-exec')?.addEventListener('click', async ()=>{
     });
 
     toast(`Bought ~${Number(r.amountOut||0).toFixed(6)} CAP • Penny ${Number(r.pennyApplied||0).toFixed(6)}`,'success');
-
-    // 🔹 NEW: optimistic bump so the CAP balance moves instantly
-    optimisticCapCredit(toCap, Number(r.amountOut || 0), amountIn);
-
-    // keep existing events/refresh
     window.dispatchEvent(new Event('cap:swapped'));
-
-    // immediate + delayed refreshes to settle to server truth
-    await fiatRefresh();
+    await fiatRefresh();       // mirror NATIVE
     refreshPortfolio();
-    setTimeout(refreshPortfolio, 800);
-    setTimeout(refreshPortfolio, 2500);
   }catch(e){
     console.warn('buy exec error', e);
     toast('Buy failed','warning');
   }
 });
 
-
 // (You can wire sell/swap the same way – json('/swaps/execute', {...}))
+// --- SELL CAP -> NATIVE ----------------------------------------------------
+document.getElementById('sell-quote')?.addEventListener('click', async ()=>{
+  await fetchRates();
+  const amt = Number(document.getElementById('sell-cap')?.value || 0);
+  if (!(amt > 0)) return toast('Enter CAP amount', 'warning');
+  const q = await getQuoteOnline({ mode: 'cap2native', amount: amt });
+  if (!q.ok) return toast('Quote failed','warning');
+  const outEl = document.getElementById('sell-native-out');
+  if (outEl) outEl.value = q.amountOut;
+  const info = document.getElementById('sell-quote-info');
+  if (info) info.textContent = `Route: ${q.route?.join(' → ') || 'CAP → NATIVE'}`;
+});
+
+document.getElementById('sell-exec')?.addEventListener('click', async ()=>{
+  try {
+    const amountIn = Number(document.getElementById('sell-cap')?.value || 0);
+    if (!(amountIn > 0)) return toast('Enter CAP amount', 'warning');
+
+    const r = await json('/swaps/execute', {
+      fromToken: 'CAP',
+      toToken:   'NATIVE',
+      amountIn,
+      autoTax: true
+    });
+
+    toast(`Sold ${amountIn} CAP → ${Number(r.amountOut||0).toFixed(6)} NATIVE`, 'success');
+    window.dispatchEvent(new Event('cap:swapped'));
+    await fiatRefresh();       // update NATIVE pouch
+    refreshPortfolio();
+  } catch (e) {
+    console.warn('sell exec error', e);
+    toast('Sell failed','warning');
+  }
+});
 
 /* =========================================================
    Connect tab helpers
@@ -535,3 +566,4 @@ document.querySelectorAll('[data-action="refresh-balances"]')
   refreshPortfolio().catch(()=>{});
   updateNativeFromFiat().catch(()=>{});
 })();
+
