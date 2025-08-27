@@ -181,15 +181,32 @@ document.head.appendChild(s);
           <hr/>
           <h5>Swap CAP → SOL (bridged)</h5>
           <div class="row g-2">
-            <div class="col-md-4">
-              <label class="form-label">CAP</label>
-              <input id="swap-cap" class="form-control" placeholder="e.g. 25"/>
-            </div>
-          </div>
-          <div class="mt-2 d-flex gap-2">
-            <button id="swap-quote" class="btn btn-outline-light btn-sm">Get quote</button>
-            <span id="swap-quote-info" class="ms-2 small text-secondary"></span>
-          </div>
+<!-- Swap CAP → SOL (bridged) -->
+
+      <div class="col-sm-4">
+        <label class="form-label">CAP</label>
+        <input id="capSolAmount" class="form-control" placeholder="e.g. 25">
+      </div>
+
+      <div class="col-sm-4">
+        <label class="form-label">Solana address</label>
+        <input id="solAddress" class="form-control" placeholder="Destination SOL pubkey">
+      </div>
+
+      <div class="col-sm-4">
+        <label class="form-label">Estimate SOL</label>
+        <input id="capSolEstimate" class="form-control" placeholder="0.000000" disabled>
+      </div>
+    </div>
+
+    <div class="d-flex gap-2">
+      <button id="btnCapSolQuote" class="btn btn-outline-info btn-sm">Get quote</button>
+      <button id="btnCapSolExecute" class="btn btn-primary btn-sm">Execute</button>
+      <span id="capSolResult" class="ms-2 small text-muted"></span>
+    </div>
+  
+
+
         </div>
       </div>
 

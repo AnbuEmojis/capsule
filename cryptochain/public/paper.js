@@ -73,6 +73,8 @@
   };
 })();
 
+
+
 // Optimistic UI bump for the portfolio pane
 function optimisticCapCredit(toCapAddress, deltaCap = 0, deltaNative = 0) {
   try {
@@ -132,6 +134,20 @@ function toast(msg, kind='info', ms=2200){
   document.body.appendChild(n);
   setTimeout(()=>n.remove(), ms);
 }
+
+// ---- helper: best CAP + SOL addresses from the UI or saved state
+function pickCapSource() {
+  const fromSell = document.getElementById('sell-src-cap')?.value?.trim();   // your “Source CAP address” input
+  const fromBuy  = document.getElementById('buy-dst-cap')?.value?.trim();    // your “Destination CAP address” input
+  const saved    = (state?.addrs?.cap || localStorage.getItem('cap_addr') || '').trim();
+  return fromSell || fromBuy || saved || '';
+}
+function pickSolDest() {
+  const fromBridge = document.getElementById('solAddress')?.value?.trim();
+  const saved      = (state?.addrs?.sol || localStorage.getItem('sol_addr') || '').trim();
+  return fromBridge || saved || '';
+}
+
 
 /* =========================================================
    FIAT / STRIPE (single-server)
@@ -340,24 +356,26 @@ $('#buy-exec')?.addEventListener('click', async ()=>{
     const toCap    = ($('#buy-dst-cap')?.value||'').trim();
     if (!(amountIn>0) || !toCap) return toast('Amount + destination required','warning');
 
-    // ⬇️ POST JSON (this is the 400/401 fix)
+    // send all common aliases so the backend validator is happy
     const r = await json('/swaps/execute', {
-      fromToken:'NATIVE',
-      toToken:'CAP',
+      fromToken: 'NATIVE',
+      toToken:   'CAP',
       amountIn,
-      autoTax:true,
-      toCapAddress: toCap
+      autoTax:   true,
+      toCapAddress: toCap,       // expected by some versions
+      capAddress:   toCap        // alias for others
     });
 
     toast(`Bought ~${Number(r.amountOut||0).toFixed(6)} CAP • Penny ${Number(r.pennyApplied||0).toFixed(6)}`,'success');
     window.dispatchEvent(new Event('cap:swapped'));
-    await fiatRefresh();       // mirror NATIVE
+    await fiatRefresh();
     refreshPortfolio();
-  }catch(e){
+  } catch (e) {
     console.warn('buy exec error', e);
     toast('Buy failed','warning');
   }
 });
+
 
 // (You can wire sell/swap the same way – json('/swaps/execute', {...}))
 // --- SELL CAP -> NATIVE ----------------------------------------------------
@@ -376,24 +394,78 @@ document.getElementById('sell-quote')?.addEventListener('click', async ()=>{
 document.getElementById('sell-exec')?.addEventListener('click', async ()=>{
   try {
     const amountIn = Number(document.getElementById('sell-cap')?.value || 0);
-    if (!(amountIn > 0)) return toast('Enter CAP amount', 'warning');
+    const fromCap  = (document.getElementById('sell-src-cap')?.value || pickCapSource()).trim();
+    if (!(amountIn > 0) || !fromCap) return toast('Enter CAP amount + source address', 'warning');
 
     const r = await json('/swaps/execute', {
       fromToken: 'CAP',
       toToken:   'NATIVE',
       amountIn,
-      autoTax: true
+      autoTax:   true,
+      fromCapAddress: fromCap,   // expected by some versions
+      capAddress:     fromCap    // alias for others
     });
 
     toast(`Sold ${amountIn} CAP → ${Number(r.amountOut||0).toFixed(6)} NATIVE`, 'success');
     window.dispatchEvent(new Event('cap:swapped'));
-    await fiatRefresh();       // update NATIVE pouch
+    await fiatRefresh();
     refreshPortfolio();
   } catch (e) {
     console.warn('sell exec error', e);
     toast('Sell failed','warning');
   }
 });
+
+
+// --- BRIDGE: CAP → SOL (quote) ---------------------------------------------
+document.getElementById('btnCapSolQuote')?.addEventListener('click', async () => {
+  const cap = Number(document.getElementById('capSolAmount')?.value || 0);
+  const solOut = document.getElementById('capSolEstimate');
+  const note = document.getElementById('capSolResult');
+  if (!(cap > 0)) { note.textContent = 'Enter CAP amount'; return; }
+
+  try {
+    const q = await api(`/bridge/quote?cap=${encodeURIComponent(cap)}`);
+    if (solOut) solOut.value = (q?.sol || 0).toFixed(6);
+    if (note) note.textContent = `Route: CAP → NATIVE → SOL @ ${q.rate?.toFixed?.(6) ?? '—'}`;
+  } catch (e) {
+    if (note) note.textContent = 'Quote failed';
+    console.warn('cap→sol quote error', e);
+  }
+});
+
+// --- BRIDGE: CAP → SOL (execute) -------------------------------------------
+document.getElementById('btnCapSolExecute')?.addEventListener('click', async () => {
+  const cap     = Number(document.getElementById('capSolAmount')?.value || 0);
+  const solAddr = (document.getElementById('solAddress')?.value || pickSolDest()).trim();
+  const fromCap = pickCapSource();
+  const note    = document.getElementById('capSolResult');
+
+  if (!(cap > 0) || !solAddr || !fromCap) {
+    note.textContent = 'Amount + CAP source + Solana address required';
+    return;
+  }
+
+  try {
+    const r = await json('/bridge/execute', {
+      cap,                                        // amount
+      solAddress:    solAddr,                     // one name
+      toSolAddress:  solAddr,                     // alias
+      fromCapAddress: fromCap,                    // required by backend
+      capAddress:     fromCap                     // alias (defensive)
+    });
+
+    const sig = r?.txSig || r?.signature || '';
+    note.textContent = sig ? `Bridged. Solana tx: ${sig.slice(0, 8)}…` : 'Bridged.';
+    window.dispatchEvent(new Event('cap:swapped'));
+    await fiatRefresh();
+    refreshPortfolio();
+  } catch (e) {
+    console.warn('cap→sol exec error', e);
+    note.textContent = 'Execute failed';
+  }
+});
+
 
 /* =========================================================
    Connect tab helpers

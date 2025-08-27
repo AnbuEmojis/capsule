@@ -1,103 +1,73 @@
 // backend/routes/bridge.js
 const express = require('express');
 const router = express.Router();
-const { PublicKey, Connection, LAMPORTS_PER_SOL, clusterApiUrl } = require('@solana/web3.js');
 
-// One source of truth for Solana-side helpers
-const sol = require('../integrations/solana_token'); // must export sendSol() and getCustodyPubkey()
-
-// ---- helpers ---------------------------------------------------
-const num = (x, d = 6) => {
-  const v = Number(x);
-  return Number.isFinite(v) ? Number(v.toFixed(d)) : 0;
-};
-const envf = (key, def) => {
-  const v = parseFloat(process.env[key]);
-  return Number.isFinite(v) ? v : def;
-};
-
-// CAP -> SOL pricing (env driven; devnet-friendly defaults)
-function quoteCap2Sol(amountCap) {
-  const capNative = envf('CAP_NATIVE', 0.01);   // native per 1 CAP
-  const nativeUsd = envf('NATIVE_USD', 1.00);   // USD per 1 NATIVE
-  const solUsd    = envf('SOL_USD', 150.0);     // USD per 1 SOL
-  const feeBps    = 25;                         // 0.25%
-  const pennyNative = 0.02;                     // flat “Penny” fee (native)
-
-  const nativeOut = amountCap * capNative;
-  const solGross  = (nativeOut * nativeUsd) / solUsd;
-  const fee       = solGross * (feeBps / 10000);
-  const solOut    = Math.max(solGross - fee, 0);
-
+// If you later wire real Solana, you can swap this logic.
+function getRates() {
   return {
-    amountCap: num(amountCap),
-    nativeOut: num(nativeOut),
-    outSol:    num(solOut, 9),
-    feeBps,
-    pennyNative: num(pennyNative)
+    NATIVE_PER_CAP: 0.01,     // 1 CAP = 0.01 NATIVE
+    NATIVE_PER_SOL: 150,      // 1 SOL = 150 NATIVE  (=> ~ $150)
   };
 }
 
-// ---- routes ----------------------------------------------------
+function toNum(x) {
+  if (x === undefined || x === null || x === '') return NaN;
+  const n = Number(x);
+  return Number.isFinite(n) ? n : NaN;
+}
 
-// GET /api/bridge/cap2sol/quote?amountCap=10
-router.get('/cap2sol/quote', (req, res) => {
-  const amt = Number(req.query.amountCap || 0);
-  if (!(amt > 0)) return res.status(400).json({ message: 'amountCap > 0 required' });
-  return res.json(quoteCap2Sol(amt));
-});
-
-// POST /api/bridge/cap2sol/execute
-// body: { amountCap, toPubkey, fromCapAddress, autoTax?, country?, province?, currency? }
-router.post('/cap2sol/execute', async (req, res) => {
+// GET /api/bridge/quote?cap=100
+router.get('/quote', async (req, res) => {
   try {
-    const { amountCap, toPubkey, fromCapAddress } = req.body || {};
-    const amt = Number(amountCap);
-    if (!toPubkey) return res.status(400).json({ message: 'toPubkey required' });
-    if (!(amt > 0)) return res.status(400).json({ message: 'amountCap > 0 required' });
-
-    // validate destination is a proper base58 pubkey
-    new PublicKey(toPubkey);
-
-    // price/fee calc
-    const q = quoteCap2Sol(amt);
-
-    // send SOL from custody (devnet)
-    const lamports = Math.max(1, Math.floor(q.outSol * LAMPORTS_PER_SOL));
-    const solSig = await sol.sendSol(toPubkey, lamports);
+    const cap = toNum(req.query.cap);
+    if (!Number.isFinite(cap) || cap <= 0) {
+      return res.status(400).json({ error: 'bad_request', detail: 'positive cap required' });
+    }
+    const R = getRates();
+    const native = cap * R.NATIVE_PER_CAP;
+    const sol = native / R.NATIVE_PER_SOL;
 
     return res.json({
-      ok: true,
-      outSol: q.outSol,
-      feeBps: q.feeBps,
-      pennyNative: q.pennyNative,
-      solSig,
-      explorer: `https://explorer.solana.com/tx/${solSig}?cluster=devnet`,
-      toPubkey,
-      custody: sol.getCustodyPubkey(),
-      fromCapAddress
+      route: 'CAP->NATIVE->SOL',
+      capIn: cap,
+      nativeIntermediate: native,
+      solOut: sol,
     });
   } catch (e) {
-    return res.status(500).json({ message: 'cap2sol execute failed', error: String(e?.message || e) });
+    console.error('/bridge/quote error', e);
+    res.status(500).json({ error: 'internal_error' });
   }
 });
 
-// (Optional) identify custody address
-router.get('/cap2sol/custody', (_req, res) => {
-  res.json({ pubkey: sol.getCustodyPubkey() });
-});
-
-// (Optional) check tx status on devnet
-router.get('/cap2sol/status', async (req, res) => {
+// POST /api/bridge/execute  { cap, fromCapAddress, toSolAddress }
+router.post('/execute', async (req, res) => {
   try {
-    const { sig } = req.query;
-    if (!sig) return res.status(400).json({ message: 'sig required' });
-    const rpc = process.env.SOLANA_RPC || clusterApiUrl('devnet');
-    const connection = new Connection(rpc, 'confirmed');
-    const st = await connection.getSignatureStatuses([String(sig)], { searchTransactionHistory: true });
-    return res.json({ value: st.value?.[0] || null });
+    const cap = toNum(req.body?.cap);
+    const fromCapAddress = (req.body?.fromCapAddress || '').trim();
+    const toSolAddress   = (req.body?.toSolAddress   || '').trim();
+
+    if (!Number.isFinite(cap) || cap <= 0 || !fromCapAddress || !toSolAddress) {
+      return res.status(400).json({ error: 'bad_request', detail: 'cap, fromCapAddress, toSolAddress required' });
+    }
+
+    // TODO: decrement CAP balance for fromCapAddress and create an outbound “bridge” record.
+    // For now we return a simulated “pending” Solana signature so your UI can proceed.
+    const fakeSig = 'SIMULATED_DEVNET_' + Math.random().toString(36).slice(2);
+
+    return res.json({
+      ok: true,
+      route: 'CAP->NATIVE->SOL',
+      capIn: cap,
+      solana: {
+        to: toSolAddress,
+        signature: fakeSig,
+        network: 'devnet',
+        note: 'Replace this with a real @solana/web3.js send when ready.',
+      }
+    });
   } catch (e) {
-    return res.status(500).json({ message: 'cap2sol status failed', error: String(e?.message || e) });
+    console.error('/bridge/execute error', e);
+    res.status(500).json({ error: 'internal_error' });
   }
 });
 

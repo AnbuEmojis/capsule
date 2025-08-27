@@ -83,6 +83,9 @@ app.get('/api/prices/latest', (_req, res) => {
   res.json({ NATIVE_USD: 1.0, CAP_NATIVE: 0.01, SOL_USD: 150 });
 });
 
+app.use('/api/bridge', require('../backend/routes/bridge'));
+
+
 // static UI
 const PUBLIC_DIR = path.join(__dirname, 'public');
 app.use(express.static(PUBLIC_DIR));

@@ -1,205 +1,201 @@
 // backend/routes/swaps.js
 const express = require('express');
 const router = express.Router();
-const chainBridge = require('../services/chainBridge');
 
-const CapBalance = require('../models/CapBalance');
-let FiatWallet;
-try { FiatWallet = require('../models/FiatWallet'); } catch { FiatWallet = null; }
+// Models you already have
+const FiatWallet = require('../models/FiatWallet');
+let CapBalance;
+try {
+  CapBalance = require('../models/CapBalance');
+} catch (_) {
+  // If your CapBalance helper lives elsewhere, no hard crash
+  CapBalance = null;
+}
 
-// ---------- helpers ----------
+/* -------------------------- tiny price oracle -------------------------- */
+/* Keep this aligned with your existing assumptions: 1 NATIVE == 1 USD.   */
+function getRates() {
+  return {
+    // 1 CAP costs 0.01 NATIVE  -> 100 CAP per 1 NATIVE
+    CAP_PER_NATIVE: 100,          // convenience form
+    NATIVE_PER_CAP: 0.01,
+  };
+}
+
+function toNum(x) {
+  if (x === undefined || x === null || x === '') return NaN;
+  const n = Number(x);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+// Extract user id in the same way the rest of your app does.
+// Falls back to dev header to avoid 401 while you test locally.
 function getUserId(req) {
-  if (req.user?.id) return String(req.user.id);
+  if (req.user && (req.user.id || req.user._id)) return String(req.user.id || req.user._id);
   if (req.headers['x-user-id']) return String(req.headers['x-user-id']);
-  if (req.body?.userId) return String(req.body.userId);
-  if (req.query?.userId) return String(req.query.userId);
-  return 'dev:local';
+  return null;
 }
 
-async function getRates() {
-  // If you have a real rate source/pool, read it here.
-  // CAP_NATIVE = how many NATIVE per 1 CAP (example: 0.01 means 1 CAP = 0.01 NATIVE)
-  return { NATIVE_USD: 1.0, CAP_NATIVE: 0.01 };
-}
-
-// Emit a tx into your chain/mempool if available (no-op otherwise)
-async function emitChainTx(req, tx) {
-  try {
-    const chain   = req.app?.locals?.chain;
-    const mempool = req.app?.locals?.mempool;
-    const miner   = req.app?.locals?.miner;
-
-    if (chain && typeof chain.addTx === 'function') {
-      chain.addTx(tx);
-    } else if (mempool && typeof mempool.push === 'function') {
-      mempool.push(tx);
-    } else {
-      // dev/accounting mode: nothing to emit to
-      return;
-    }
-
-    // Optionally poke the miner
-    if (miner && typeof miner.mineNext === 'function') {
-      miner.mineNext();
-    }
-  } catch (e) {
-    console.warn('[chain-tx] emit failed (non-fatal):', e);
-  }
-}
-
-// ---------- routes ----------
-
-// GET /api/swaps/quote?fromToken=NATIVE&toToken=CAP&amount=123
+/* ------------------------------ /quote --------------------------------- */
+// GET /api/swaps/quote?fromToken=NATIVE&toToken=CAP&amount=10
 router.get('/quote', async (req, res) => {
   try {
-    const fromToken = String(req.query.fromToken || '').toUpperCase();
-    const toToken   = String(req.query.toToken   || '').toUpperCase();
-    const amountIn  = Number(req.query.amount || 0);
-    if (!(amountIn > 0)) return res.status(400).json({ error: 'bad_amount' });
+    const from = String(req.query.fromToken || '').toUpperCase();
+    const to   = String(req.query.toToken   || '').toUpperCase();
+    const amountIn = toNum(req.query.amount);
 
-    const fx = await getRates();
-    let amountOut = 0;
-
-    if (fromToken === 'NATIVE' && toToken === 'CAP') {
-      amountOut = amountIn / (fx.CAP_NATIVE || 0.01);
-    } else if (fromToken === 'CAP' && toToken === 'NATIVE') {
-      amountOut = amountIn * (fx.CAP_NATIVE || 0.01);
-    } else {
-      return res.status(400).json({ error: 'unsupported_pair' });
+    if (!from || !to || !Number.isFinite(amountIn) || amountIn <= 0) {
+      return res.status(400).json({ error: 'bad_request', detail: 'fromToken, toToken, positive amount required' });
     }
 
-    res.json({ ok: true, amountOut, route: [fromToken, toToken] });
+    const R = getRates();
+
+    // NATIVE -> CAP
+    if (from === 'NATIVE' && to === 'CAP') {
+      const cap = amountIn * R.CAP_PER_NATIVE;
+      return res.json({
+        fromToken: from, toToken: to,
+        amountIn,
+        amountOut: cap,
+        route: 'NATIVE->CAP',
+      });
+    }
+
+    // CAP -> NATIVE
+    if (from === 'CAP' && to === 'NATIVE') {
+      const native = amountIn * R.NATIVE_PER_CAP;
+      return res.json({
+        fromToken: from, toToken: to,
+        amountIn,
+        amountOut: native,
+        route: 'CAP->NATIVE',
+      });
+    }
+
+    return res.status(400).json({ error: 'unsupported_pair' });
   } catch (e) {
-    console.error('quote error', e);
+    console.error('/swaps/quote error', e);
     res.status(500).json({ error: 'internal_error' });
   }
 });
 
+/* ----------------------------- /execute -------------------------------- */
 // POST /api/swaps/execute
-// body: { fromToken, toToken, amountIn, toCapAddress?, autoTax? }
+// body can be JSON or form-encoded; we normalize it below.
 router.post('/execute', async (req, res) => {
   try {
-    const fromToken = String(req.body?.fromToken || '').toUpperCase();
-    const toToken   = String(req.body?.toToken   || '').toUpperCase();
-    const amountIn  = Number(req.body?.amountIn ?? req.body?.amount);
-    const toCapAddress = String(req.body?.toCapAddress || '').trim();
+    // accept either JSON body or form data
+    const body = {
+      fromToken:   req.body?.fromToken   ?? req.body?.from,
+      toToken:     req.body?.toToken     ?? req.body?.to,
+      amountIn:    req.body?.amountIn    ?? req.body?.amount,
+      capAddress:  req.body?.capAddress  ?? req.body?.address, // source/dest CAP addr
+    };
 
-    if (!(amountIn > 0)) return res.status(400).json({ error: 'bad_amount' });
-    if (!['NATIVE','CAP'].includes(fromToken) || !['NATIVE','CAP'].includes(toToken)) {
-      return res.status(400).json({ error: 'unsupported_pair' });
+    const from = String(body.fromToken || '').toUpperCase();
+    const to   = String(body.toToken   || '').toUpperCase();
+    const amountIn = toNum(body.amountIn);
+    const capAddress = (body.capAddress || '').trim();
+
+    if (!from || !to || !Number.isFinite(amountIn) || amountIn <= 0) {
+      return res.status(400).json({ error: 'bad_request', detail: 'fromToken, toToken, positive amount required' });
     }
 
     const userId = getUserId(req);
-    const fx = await getRates();
-
-    // Load docs
-    const capDoc = await CapBalance.getFor({ userId, address: toCapAddress || undefined });
-    let fiatDoc = null;
-    if (FiatWallet) {
-      fiatDoc = await FiatWallet.findOneAndUpdate(
-        { userId },
-        { $setOnInsert: { userId, currency: 'USD', balanceCents: 0 } },
-        { new: true, upsert: true }
-      );
+    if (!userId) {
+      // Keep identical to how your API enforces auth elsewhere
+      return res.status(401).json({ error: 'unauthorized' });
     }
 
-    let amountOut = 0;
+    // Load or create fiat wallet
+    let fw = await FiatWallet.findOne({ userId });
+    if (!fw) {
+      fw = await FiatWallet.create({ userId, currency: 'USD', balanceCents: 0 });
+    }
 
-    // BUY: NATIVE -> CAP
-    if (fromToken === 'NATIVE' && toToken === 'CAP') {
-      const centsNeeded = Math.round(amountIn * 100);
-      if (fiatDoc && (fiatDoc.balanceCents || 0) < centsNeeded) {
-        return res.status(409).json({ error: 'insufficient_native' });
+    // CAP balance helpers (keep your existing model semantics)
+    async function getCapBalance(addr) {
+      if (!CapBalance) return 0;
+      const r = await CapBalance.findOne({ capAddress: addr });
+      return r ? Number(r.tokens || 0) : 0;
+    }
+    async function setCapBalance(addr, tokens) {
+      if (!CapBalance) return;
+      const existing = await CapBalance.findOne({ capAddress: addr });
+      if (existing) {
+        existing.tokens = tokens;
+        await existing.save();
+      } else {
+        await CapBalance.create({ capAddress: addr, tokens });
+      }
+    }
+
+    const R = getRates();
+
+    // NATIVE -> CAP (buy CAP)
+    if (from === 'NATIVE' && to === 'CAP') {
+      if (!capAddress) {
+        return res.status(400).json({ error: 'bad_request', detail: 'capAddress required' });
+      }
+      const centsNeeded = Math.round(amountIn * 100); // 1 NATIVE == 1 USD
+      if (fw.balanceCents < centsNeeded) {
+        return res.status(409).json({ error: 'insufficient_native', haveCents: fw.balanceCents, needCents: centsNeeded });
       }
 
-      amountOut = amountIn / (fx.CAP_NATIVE || 0.01);
+      const capOut = amountIn * R.CAP_PER_NATIVE;
 
-      if (fiatDoc) {
-        fiatDoc.balanceCents = Math.max(0, (fiatDoc.balanceCents || 0) - centsNeeded);
-        await fiatDoc.save();
-      }
-      await capDoc.applyDelta(+amountOut);
+      // apply
+      fw.balanceCents -= centsNeeded;
+      await fw.save();
 
-      await chainBridge.recordSwap(req, {
-        userId: req.user?.id || req.headers['x-user-id'] || 'unknown',
-        address: req.body?.address || req.body?.toAddress || req.user?.address || 'unknown',
-        fromToken: 'NATIVE',
-        toToken: 'CAP',
-        amountIn,                     // the native spent
-        amountOut: result?.amountOut, // whatever you returned to the client
-        quote: result?.quoteId,       // optional
-        txId:   result?.txId          // optional
-      });
-      
-
-      // emit chain tx (non-fatal if no chain)
-      await emitChainTx(req, {
-        type: 'SWAP',
-        side: 'BUY',
-        fromToken, toToken,
-        amountIn, amountOut,
-        address: toCapAddress || req.body?.address || '',
-        userId, ts: Date.now()
-      });
+      const prevCap = await getCapBalance(capAddress);
+      await setCapBalance(capAddress, prevCap + capOut);
 
       return res.json({
         ok: true,
-        fromToken, toToken, amountIn, amountOut,
+        txType: 'BUY_CAP',
+        fromToken: from, toToken: to, amountIn, amountOut: capOut,
+        capAddress,
         balances: {
-          cap: capDoc.capUnits,
-          native: fiatDoc ? (fiatDoc.balanceCents/100) : undefined
+          capTokens: prevCap + capOut,
+          fiatBalanceCents: fw.balanceCents
         }
       });
     }
 
-    // SELL: CAP -> NATIVE
-    if (fromToken === 'CAP' && toToken === 'NATIVE') {
-      if ((capDoc.capUnits || 0) < amountIn) {
-        return res.status(409).json({ error: 'insufficient_cap' });
+    // CAP -> NATIVE (sell CAP)
+    if (from === 'CAP' && to === 'NATIVE') {
+      if (!capAddress) {
+        return res.status(400).json({ error: 'bad_request', detail: 'capAddress required' });
       }
-      amountOut = amountIn * (fx.CAP_NATIVE || 0.01);
-
-      await capDoc.applyDelta(-amountIn);
-      if (fiatDoc) {
-        fiatDoc.balanceCents = Math.max(0, (fiatDoc.balanceCents || 0) + Math.round(amountOut * 100));
-        await fiatDoc.save();
+      const prevCap = await getCapBalance(capAddress);
+      if (prevCap < amountIn) {
+        return res.status(409).json({ error: 'insufficient_cap', haveCAP: prevCap, needCAP: amountIn });
       }
 
-      // emit chain tx (non-fatal if no chain)
-      await emitChainTx(req, {
-        type: 'SWAP',
-        side: 'SELL',
-        fromToken, toToken,
-        amountIn, amountOut,
-        address: req.body?.address || '',
-        userId, ts: Date.now()
-      });
+      const nativeOut = amountIn * R.NATIVE_PER_CAP;
+      const centsDelta = Math.round(nativeOut * 100);
 
-      await chainBridge.recordSwap(req, {
-        userId: req.user?.id || req.headers['x-user-id'] || 'unknown',
-        address: req.body?.address || req.body?.fromAddress || req.user?.address || 'unknown',
-        fromToken: 'CAP',
-        toToken: 'NATIVE',
-        amountIn,                     // CAP burned
-        amountOut: result?.amountOut, // native back
-        quote: result?.quoteId,       // optional
-        txId:   result?.txId          // optional
-      });
-      
+      // apply
+      await setCapBalance(capAddress, prevCap - amountIn);
+      fw.balanceCents += centsDelta;
+      await fw.save();
 
       return res.json({
         ok: true,
-        fromToken, toToken, amountIn, amountOut,
+        txType: 'SELL_CAP',
+        fromToken: from, toToken: to, amountIn, amountOut: nativeOut,
+        capAddress,
         balances: {
-          cap: capDoc.capUnits,
-          native: fiatDoc ? (fiatDoc.balanceCents/100) : undefined
+          capTokens: prevCap - amountIn,
+          fiatBalanceCents: fw.balanceCents
         }
       });
     }
 
-    res.status(400).json({ error: 'unsupported_pair' });
+    return res.status(400).json({ error: 'unsupported_pair' });
   } catch (e) {
-    console.error('execute error', e);
+    console.error('/swaps/execute error', e);
     res.status(500).json({ error: 'internal_error' });
   }
 });
